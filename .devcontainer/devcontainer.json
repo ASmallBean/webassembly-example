@@ -2,14 +2,14 @@
 // https://github.com/microsoft/vscode-dev-containers/tree/v0.195.0/containers/javascript-node
 {
 	"name": "Webassmebly",
-	"image": "emscripten/emsdk",
-	// "build": {
-	// 	"dockerfile": "Dockerfile",
-	// 	// Update 'VARIANT' to pick a Node version: 16, 14, 12.
-	// 	// Append -bullseye or -buster to pin to an OS version.
-	// 	// Use -bullseye variants on local arm64/Apple Silicon.
-	// 	"args": {}
-	// },
+	// "image": "emscripten/emsdk",
+	"build": {
+		"dockerfile": "Dockerfile",
+		// Update 'VARIANT' to pick a Node version: 16, 14, 12.
+		// Append -bullseye or -buster to pin to an OS version.
+		// Use -bullseye variants on local arm64/Apple Silicon.
+		"args": {}
+	},
 	// Set *default* container specific settings.json values on container create.
 	"settings": {},
 	// Add the IDs of extensions you want installed when the container is created.
@@ -32,5 +32,5 @@
 	// Use 'postCreateCommand' to run commands after the container is created.
 	"postCreateCommand": "",
 	// Comment out connect as root instead. More info: https://aka.ms/vscode-remote/containers/non-root.
-	"remoteUser": "Claus"
+	"remoteUser": "emscripten"
 }
