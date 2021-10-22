@@ -6,3 +6,9 @@ build.wasm:
 .PHONY: build.cpp
 build.wasm:
 	@g++ src/main.cpp -o ./dist/run
+
+
+.PHONY: build.html
+build.wasm:
+	@emcc src/main.cpp -s WASM=1 -o helloworld.html
+
