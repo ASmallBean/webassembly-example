@@ -7,4 +7,14 @@ __ATPOSTRUN__.push(() => {
     clearArrResult.push(Module['getValue'](arrayPointer + i, 'i8'));
   }
   console.log(clearArrResult);
+  var time = performance.timing;
+  var loadingTime = time.loadEventStart - time.navigationStart;
+  var executionTime = performance.now() - startTimestamp;
+  var totalTime = new Date().getTime() - time.navigationStart;
+  //打印应用的脚本执行时间
+  console.log("Application ET:", Math.round(executionTime), "ms");
+  //打印应用的脚本下载时间和初始化时间
+  console.log("Application LT:", loadingTime, "ms");
+  //打印应用的整体时间
+  console.log("Application TT:", totalTime, "ms");
 });
