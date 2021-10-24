@@ -1,13 +1,13 @@
 var http = require('http');
 var url = require('url');
 var fs = require('fs');
-var path =require('path');
+var path = require('path');
 
 const PORT = 8888;
 
 var mime = {
-	"html": "text/html;charset=UTF-8",
-	"wasm": "application/wasm"
+  "html": "text/html;charset=UTF-8",
+  "wasm": "application/wasm"
 };
 
 http.createServer((request, response) => {
@@ -26,7 +26,7 @@ http.createServer((request, response) => {
           });
           response.end(err.code);
         } else {
-        	var ext = path.extname(realPath);
+          var ext = path.extname(realPath);
           ext = ext ? ext.slice(1) : 'unknown';
           var contentType = mime[ext] || "text/plain";
           response.writeHead(200, {
@@ -40,4 +40,4 @@ http.createServer((request, response) => {
     }
   });
 }).listen(PORT);
-console.log("Server is runing at port: " + PORT + ".")
+console.log("Server is runing at port: http://localhost:" + PORT + ".")
