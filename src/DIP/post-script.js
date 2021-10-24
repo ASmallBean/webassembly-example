@@ -1,8 +1,8 @@
-__ATPOSTRUN__.push(function() {
+__ATPOSTRUN__.push(function () {
   var GLOBAL_STATUS = 'STOP';
   // listeners;
-  document.querySelector("button").addEventListener('click', function(e) {
-    var aim = Array.prototype.slice.call(document.querySelectorAll("[name='options']")).filter(function(item) {
+  document.querySelector("button").addEventListener('click', function (e) {
+    var aim = Array.prototype.slice.call(document.querySelectorAll("[name='options']")).filter(function (item) {
       if (item.checked) {
         return item;
       }
@@ -19,8 +19,8 @@ __ATPOSTRUN__.push(function() {
 
   // filters related stuff;
   var kernel = [
-    [-1, -1, 1], 
-    [-1, 14, -1], 
+    [-1, -1, 1],
+    [-1, 14, -1],
     [1, -1, -1]
   ];
   var divisor = 4;
@@ -57,17 +57,17 @@ __ATPOSTRUN__.push(function() {
 
 
   // filters functions;
-  function filterWASM (pixelData, width, height) {
+  function filterWASM(pixelData, width, height) {
     const arLen = pixelData.length;
     const memData = Module['_malloc'](arLen * Uint8Array.BYTES_PER_ELEMENT);
 
     // fill data into buffer;
     HEAPU8.set(pixelData, memData / Uint8Array.BYTES_PER_ELEMENT);
 
-    const flatKernel = kernel.reduce(function(acc, cur) { 
+    const flatKernel = kernel.reduce(function (acc, cur) {
       return acc.concat(cur)
     });
-  
+
     const memKernel = Module['_malloc'](9 * Int8Array.BYTES_PER_ELEMENT);
 
     // fill data into buffer;
@@ -87,21 +87,21 @@ __ATPOSTRUN__.push(function() {
 
 
   // fileters (JS polyfill);
-  function filterJS (pixelData, width, height) {
+  function filterJS(pixelData, width, height) {
     return jsConvFilter(pixelData, width, height, kernel, divisor);
   }
 
 
-  function getAverageTime (vector) {
+  function getAverageTime(vector) {
     var AVERAGE_RECORDS_COUNT = -20;
-    return (vector.slice(AVERAGE_RECORDS_COUNT).reduce(function(pre, item) { 
-      return (pre + item) 
+    return (vector.slice(AVERAGE_RECORDS_COUNT).reduce(function (pre, item) {
+      return (pre + item)
     }, 0) / Math.abs(AVERAGE_RECORDS_COUNT)).toFixed(2);
   }
 
 
   // drawing function;
-  function draw () {
+  function draw() {
     // render the first frame from the top-left of the canvas;
     context.drawImage(video, 0, 0);
 
@@ -112,7 +112,7 @@ __ATPOSTRUN__.push(function() {
     const timeStart = performance.now();
     if (GLOBAL_STATUS === 'JS') {
       pixels.data.set(filterJS(pixels.data, clientx, clienty));
-    } 
+    }
     if (GLOBAL_STATUS === 'WASM') {
       pixels.data.set(filterWASM(pixels.data, clientx, clienty));
     }
@@ -130,7 +130,7 @@ __ATPOSTRUN__.push(function() {
     } else {
       fpsNumDisplayElement.innerHTML = 'NaN';
     }
-    
+
     // append image onto the canvas;
     context.putImageData(pixels, 0, 0);
     // continue;
@@ -146,7 +146,7 @@ __ATPOSTRUN__.push(function() {
   var context = canvas.getContext('2d');
 
   // init canvas;
-  video.addEventListener("loadeddata", function() {
+  video.addEventListener("loadeddata", function () {
     // set the size of current stage;
     canvas.setAttribute('height', video.videoHeight);
     canvas.setAttribute('width', video.videoWidth);
@@ -154,7 +154,7 @@ __ATPOSTRUN__.push(function() {
     // get the drawing size of the stage;
     clientx = canvas.clientWidth;
     clienty = canvas.clientHeight;
-    
+
     // start drawing!
     draw(context);
   });
