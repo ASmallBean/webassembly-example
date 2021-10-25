@@ -1,6 +1,8 @@
+DIST_DIR=dist
 SORT_DIR=src/sort
 ADD_DIR=src/add
-DIST_DIR=dist
+DIP_DIR=src/dip
+GO_DIR=src/go
 WASI_SDK=/root/wasi-sdk-12.0
 
 
@@ -11,6 +13,18 @@ build.add.js:
 .PHONY: build.add.wasm
 build.add.wasm:
 	@emcc ${ADD_DIR}/main.cpp -o ${ADD_DIR}/index.js
+
+
+
+.PHONY: build.go.wasm
+build.go.wasm:
+	@cd ${GO_DIR} && GOOS=js GOARCH=wasm go build -o main.wasm && cd -
+
+
+
+.PHONY: build.dip.js
+build.dip.js:
+	@emcc ${DIP_DIR}/main.cpp --std=c++11 -s WASM=1 -o ${SORT_DIR}/js/index.js --post-js ${SORT_DIR}/post-script.js --pre-js ${SORT_DIR}/pre-script.js -s EXPORTED_RUNTIME_METHODS="['cwrap','getValue']"
 
 
 
