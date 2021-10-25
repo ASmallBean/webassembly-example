@@ -1,4 +1,3 @@
-// wasi-app.c
 #include <stdio.h>
 #define BUF_SIZE 1024
 int main(int argc, char **argv) {
