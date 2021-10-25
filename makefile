@@ -4,9 +4,16 @@ DIST_DIR=dist
 WASI_SDK=/root/wasi-sdk-12.0
 
 
-.PHONY: build.emcc.wasm
-build.wasm:
-	@emcc ${ADD_DIR}/main.cpp ${ADD_DIR}/max.cpp -o ${ADD_DIR}/index.js
+.PHONY: build.add.js
+build.add.js:
+	@emcc ${ADD_DIR}/main.cpp -o ${ADD_DIR}/js/index.js
+
+.PHONY: build.add.wasm
+build.add.wasm:
+	@emcc ${ADD_DIR}/main.cpp -o ${ADD_DIR}/index.js
+
+
+
 
 .PHONY: build.sort.js
 build.sort.js:
