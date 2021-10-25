@@ -4,11 +4,12 @@ int main(int argc, char **argv) {
   size_t counter = 0;
   char buf[BUF_SIZE];
   int c;
+
   while ((c = getchar()) != '\n') {
     buf[counter++] = c;
   }
   if (counter > 0) {
-    printf("The input content is: %s\n", buf);
+    printf("The input content is: %s\ncount: %zu",buf,counter);
     // write content to local file.
     FILE* fd;
     if ((fd = fopen("wasi-static.txt", "w"))) {

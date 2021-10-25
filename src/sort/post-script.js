@@ -3,11 +3,12 @@ __ATPOSTRUN__.push(() => {
   var array = [11, 24, 36, 42, 4, 25, 9, 1, 0];
   var arrayPointer = Module['cwrap']('quickSort', 'number', ['array', 'number', 'number'])(array, 0, array.length - 1);
   var clearArrResult = [];
+  console.log(arrayPointer)
   for (let i = 0; i < array.length; i++) {
     clearArrResult.push(Module['getValue'](arrayPointer + i, 'i8'));
   }
   console.log(clearArrResult);
-  var time = performance.timing;
+  var time = performance.timeOrigin;
   var loadingTime = time.loadEventStart - time.navigationStart;
   var executionTime = performance.now() - startTimestamp;
   var totalTime = new Date().getTime() - time.navigationStart;
