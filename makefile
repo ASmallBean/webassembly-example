@@ -18,3 +18,7 @@ build.cpp:
 build.html:
 	@emcc ${CppDir}/main.cpp -s WASM=1 -o helloworld.html
 
+
+.PHONY: build.wasi-app
+build.wasi-app:
+	@clang  src/wasi-app/wasi-app.c -o wasi-app
