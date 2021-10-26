@@ -2,7 +2,9 @@ DIST_DIR=dist
 SORT_DIR=src/sort
 ADD_DIR=src/add
 DIP_DIR=src/dip
+FIB_DIR=src/fib
 GO_DIR=src/go
+WASI_APP_DIR=src/wasi-app
 WASI_SDK=/root/wasi-sdk-12.0
 
 
@@ -16,15 +18,30 @@ build.add.wasm:
 
 
 
+.PHONY: build.fib.clang
+build.fib.clang:
+	@clang++  ${FIB_DIR}/main.cpp -o fib_app
+
+
+.PHONY: build.fib.wasm
+build.fib.wasm:
+	@emcc ${FIB_DIR}/fib.cpp -o ${FIB_DIR}/index.html
+
+
 .PHONY: build.go.wasm
 build.go.wasm:
 	@cd ${GO_DIR} && GOOS=js GOARCH=wasm go build -o main.wasm && cd -
 
 
 
+
+
 .PHONY: build.dip.js
 build.dip.js:
 	@emcc ${DIP_DIR}/main.cpp --std=c++11 -s WASM=1 -o ${SORT_DIR}/js/index.js --post-js ${SORT_DIR}/post-script.js --pre-js ${SORT_DIR}/pre-script.js -s EXPORTED_RUNTIME_METHODS="['cwrap','getValue']"
+
+
+
 
 
 
@@ -40,14 +57,16 @@ build.sort.html:
 
 
 
+
+
 .PHONY: build.wasi.g++
 build.wasi.g++:
-	@g++  src/wasi-app/main.cpp -o wasi-app
+	@g++  ${WASI_APP_DIR}/main.cpp -o wasi-app
 
 
 .PHONY: build.wasi.clang
 build.wasi.clang:
-	@clang  src/wasi-app/main.cpp -o wasi-app
+	@clang++  ${WASI_APP_DIR}/main.cpp -o wasi-app
 
 
 .PHONY: build.wasi.wasm
