@@ -1730,14 +1730,40 @@ __ATPOSTRUN__.push(function () {
   // variable and parameters;
   var fpsNumDisplayElement = document.querySelector('.fps-num');
   var jsTimeRecords = [], wasmTimeRecords = [];
-  var clientx, clienty;
+  var clientX, clientY;
 
   // filters related stuff;
-  var kernel = [
+
+  // 矩阵翻转函数；
+  function flipKernel(kernel) {
+    const h = kernel.length;
+    const half = Math.floor(h / 2);
+    // 按中心对称的方式将矩阵中的数字上下、左右进行互换；
+    for (let i = 0; i < half; ++i) {
+      for (let j = 0; j < h; ++j) {
+        let _t = kernel[i][j];
+        kernel[i][j] = kernel[h - i - 1][h - j - 1];
+        kernel[h - i - 1][h - j - 1] = _t;
+      }
+    }
+    // 处理矩阵行数为奇数的情况；
+    if (h & 1) {
+      // 将中间行左右两侧对称位置的数进行互换；
+      for (let j = 0; j < half; ++j) {
+        let _t = kernel[half][j];
+        kernel[half][j] = kernel[half][h - j - 1];
+        kernel[half][h - j - 1] = _t;
+      }
+    }
+    return kernel;
+  }
+  // 得到经过翻转 180 度后的卷积核矩阵；
+  const kernel = flipKernel([
     [-1, -1, 1],
     [-1, 14, -1],
     [1, -1, -1]
-  ];
+  ]);
+
   var divisor = 4;
 
 
@@ -1836,7 +1862,7 @@ __ATPOSTRUN__.push(function () {
 
     switch (GLOBAL_STATUS) {
       case 'JS':
-        pixels.data.set(filterJS(pixels.data, clientx, clienty));
+        pixels.data.set(filterJS(pixels.data, clientX, clientY));
         var timeUsed = Math.round(1000 / (performance.now() - timeStart));
         // push new time record into vector;
         jsTimeRecords.push(timeUsed);
@@ -1844,7 +1870,7 @@ __ATPOSTRUN__.push(function () {
         fpsNumDisplayElement.innerHTML = calcFPS(jsTimeRecords);
         break;
       case 'WASM':
-        pixels.data.set(filterWASM(pixels.data, clientx, clienty));
+        pixels.data.set(filterWASM(pixels.data, clientX, clientY));
         var timeUsed = Math.round(1000 / (performance.now() - timeStart));
         wasmTimeRecords.push(timeUsed);
         fpsNumDisplayElement.innerHTML = calcFPS(wasmTimeRecords);
@@ -1868,6 +1894,14 @@ __ATPOSTRUN__.push(function () {
   // get a canvas context;
   var context = canvas.getContext('2d');
 
+  // 自动播放 <video> 载入的视频；
+  let promise = video.play();
+  if (promise !== undefined) {
+    promise.catch(error => {
+      console.error("The video can not autoplay!")
+    });
+  }
+
   function start() {
     console.log("start")
     if (GLOBAL_STATUS === "JS" || GLOBAL_STATUS === "WASM") {
@@ -1876,8 +1910,8 @@ __ATPOSTRUN__.push(function () {
       canvas.setAttribute('width', video.videoWidth);
 
       // get the drawing size of the stage;
-      clientx = canvas.clientWidth;
-      clienty = canvas.clientHeight;
+      clientX = canvas.clientWidth;
+      clientY = canvas.clientHeight;
 
       // start drawing!
       draw(context);
