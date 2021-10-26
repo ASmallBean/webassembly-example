@@ -18,6 +18,6 @@ int main(){
   t1 = clock();
   fib(40);
   t2 = clock();
-  cout<<int(t2 - t1)<<"ms"<<endl;
+  cout<< (t2 - t1)/1000 <<"ms"<<endl;
 	return 0;
 }

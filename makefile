@@ -20,12 +20,24 @@ build.add.wasm:
 
 .PHONY: build.fib.clang
 build.fib.clang:
-	@clang++  ${FIB_DIR}/main.cpp -o fib_app
+	@clang  ${FIB_DIR}/main.cpp -o fib_app
 
 
 .PHONY: build.fib.wasm
 build.fib.wasm:
-	@emcc ${FIB_DIR}/fib.cpp -o ${FIB_DIR}/index.html
+	@emcc ${FIB_DIR}/fib.cpp --no-entry -o ${FIB_DIR}/fib.wasm
+
+
+.PHONY: build.fib.html
+build.fib.html:
+	@emcc ${FIB_DIR}/main.cpp -o ${FIB_DIR}/html/index.html
+
+
+.PHONY: build.fib.js
+build.fib.js:
+	@emcc ${FIB_DIR}/main.cpp -o ${FIB_DIR}/js/index.js
+
+
 
 
 .PHONY: build.go.wasm

@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/echarts@5.2.1/dist/echarts.min.js"></script>
+  <title>Document</title>
+</head>
+
+<body>
+  <div id="container" style="height: 100vh"></div>
+  <script>
+    let num = 20
+    const jsData = []
+    const wasmData = []
+    const indexData = []
+    // 斐波那契法
+    function fib(x) {
+      if (x <= 0) {
+        return 0
+      }
+      if (x <= 2) {
+        return 1
+      }
+      return fib(x - 1) + fib(x - 2)
+    }
+
+    fetch("fib.wasm")
+      .then(response => response.arrayBuffer())
+      .then(bytes => WebAssembly.compile(bytes))
+      .then(mod => WebAssembly.instantiate(mod))
+      .then(instance => {
+        const exports = instance.exports
+        const times = 1000000000000
+        for (let index = 0; index < num; index++) {
+          console.log("----------------")
+          indexData.push(index)
+
+          const start = performance.now() * times
+          const jsResult = fib(index)
+          const jsEnd = performance.now() * times
+
+          const wasmResult = exports.fib(index)
+          const wasmEnd = performance.now() * times
+
+          const jsTime = jsEnd - start
+          const wasmTime = wasmEnd - jsEnd
+          jsData.push(jsTime)
+          wasmData.push(wasmTime)
+
+          console.log(`js耗时 ${jsTime} wasm 耗时 ${wasmTime}`)
+
+          if (wasmTime > jsTime) {
+            console.log(`%c js更快 index 为 ${index}`, 'color: white; background: red; font-size: 30px')
+          } else {
+            console.log(`%c wasm更快 index 为 ${index}`, 'color: white; background: green; font-size: 30px')
+          }
+        }
+
+        // run chart
+        var dom = document.getElementById("container");
+        var myChart = echarts.init(dom);
+        var app = {};
+
+        var option;
+
+        option = {
+          title: {
+            text: 'Stacked Line'
+          },
+          tooltip: {
+            trigger: 'axis'
+          },
+          legend: {
+            data: ['JS', 'WASM']
+          },
+          grid: {
+            left: '3%',
+            right: '4%',
+            bottom: '3%',
+            containLabel: true
+          },
+          toolbox: {
+            feature: {
+              saveAsImage: {}
+            }
+          },
+          xAxis: {
+            type: 'category',
+            boundaryGap: false,
+            data: indexData
+          },
+          yAxis: {
+            type: 'value'
+          },
+          series: [
+            {
+              name: 'JS',
+              type: 'line',
+              data: jsData
+            },
+            {
+              name: 'WASM',
+              type: 'line',
+              data: wasmData
+            },
+          ]
+        };
+
+        if (option && typeof option === 'object') {
+          myChart.setOption(option);
+        }
+      })
+  </script>
+
+</body>
+
+</html>
