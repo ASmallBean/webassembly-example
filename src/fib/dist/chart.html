@@ -12,10 +12,11 @@
 <body>
   <div id="container" style="height: 100vh"></div>
   <script>
-    let num = 20
+    let num = 30
     const jsData = []
     const wasmData = []
     const indexData = []
+    const timesData = []
     // 斐波那契法
     function fib(x) {
       if (x <= 0) {
@@ -33,23 +34,31 @@
       .then(mod => WebAssembly.instantiate(mod))
       .then(instance => {
         const exports = instance.exports
-        const times = 1000000000000
-        for (let index = 0; index < num; index++) {
-          console.log("----------------")
+        const times = 100
+
+        for (let index = 2; index < num; index++) {
           indexData.push(index)
+          // js
 
           const start = performance.now() * times
+          console.time(`js测试速度${index}`)
           const jsResult = fib(index)
+          console.timeEnd(`js测试速度${index}`)
           const jsEnd = performance.now() * times
 
+
+          // wasm
+          console.time(`wasm测试速度${index}`)
           const wasmResult = exports.fib(index)
+          console.timeEnd(`wasm测试速度${index}`)
           const wasmEnd = performance.now() * times
+
 
           const jsTime = jsEnd - start
           const wasmTime = wasmEnd - jsEnd
           jsData.push(jsTime)
           wasmData.push(wasmTime)
-
+          timesData.push(Number((jsTime / wasmTime).toFixed(1)))
           console.log(`js耗时 ${jsTime} wasm 耗时 ${wasmTime}`)
 
           if (wasmTime > jsTime) {
@@ -68,7 +77,7 @@
 
         option = {
           title: {
-            text: 'Stacked Line'
+            text: '斐波拉契函数测试js和wasm'
           },
           tooltip: {
             trigger: 'axis'
@@ -77,9 +86,9 @@
             data: ['JS', 'WASM']
           },
           grid: {
-            left: '3%',
-            right: '4%',
-            bottom: '3%',
+            left: '5%',
+            right: '5%',
+            bottom: '5%',
             containLabel: true
           },
           toolbox: {
@@ -92,9 +101,40 @@
             boundaryGap: false,
             data: indexData
           },
-          yAxis: {
-            type: 'value'
-          },
+          yAxis: [
+            {
+              type: 'value',
+              axisLabel: {
+                formatter: function (value, index) {
+                  return value / times + 'ms';
+                }
+              },
+            },
+            {
+              type: 'value',
+              name: 'js运行时间/wasm运行时间',
+              min: 0,
+              max: 10,
+              position: 'right',
+              axisLabel: {
+                formatter: '{value} 倍'
+              },
+              axisLine: {
+                show: true,
+              },
+            }
+          ],
+          dataZoom: [
+            {
+              type: 'inside',
+              start: 0,
+              end: 100
+            },
+            {
+              start: 0,
+              end: 100
+            }
+          ],
           series: [
             {
               name: 'JS',
@@ -105,6 +145,21 @@
               name: 'WASM',
               type: 'line',
               data: wasmData
+            },
+            {
+              name: 'JS/WASM',
+              type: 'bar',
+              data: timesData,
+              yAxisIndex: 1,
+              markLine: {
+                data: [{
+                  name: '1倍',
+                  yAxis: 1,
+                  lineStyle: {
+                    color: 'red'
+                  }
+                }]
+              }
             },
           ]
         };
