@@ -1,14 +1,17 @@
 __ATPOSTRUN__.push(function () {
-  var GLOBAL_STATUS = 'STOP';
-  // listeners;
-  document.querySelector("button").addEventListener('click', function (e) {
-    var aim = Array.prototype.slice.call(document.querySelectorAll("[name='options']")).filter(function (item) {
-      if (item.checked) {
-        return item;
-      }
-    });
-    var statusFlag = ['STOP', 'JS', 'WASM'];
-    GLOBAL_STATUS = statusFlag[aim.pop().value];
+
+  // 全局状态；
+  const STATUS = ['STOP', 'JS', 'WASM'];
+  // 当前状态；
+  let GLOBAL_STATUS = 'STOP';
+  // 监听用户点击事件；
+  document.querySelector("button").addEventListener('click', () => {
+    GLOBAL_STATUS = STATUS[
+      Number(
+        document.querySelector("input[name='options']:checked").value
+      )
+    ];
+    start()
   });
 
 
@@ -58,8 +61,12 @@ __ATPOSTRUN__.push(function () {
 
   // filters functions;
   function filterWASM(pixelData, width, height) {
+
     const arLen = pixelData.length;
+    console.log(Module)
+
     const memData = Module['_malloc'](arLen * Uint8Array.BYTES_PER_ELEMENT);
+    console.log(memData)
 
     // fill data into buffer;
     HEAPU8.set(pixelData, memData / Uint8Array.BYTES_PER_ELEMENT);
@@ -91,14 +98,21 @@ __ATPOSTRUN__.push(function () {
     return jsConvFilter(pixelData, width, height, kernel, divisor);
   }
 
-
-  function getAverageTime(vector) {
-    var AVERAGE_RECORDS_COUNT = -20;
-    return (vector.slice(AVERAGE_RECORDS_COUNT).reduce(function (pre, item) {
-      return (pre + item)
-    }, 0) / Math.abs(AVERAGE_RECORDS_COUNT)).toFixed(2);
+  function calcFPS(vector) {
+    // 提取容器中的前 20 个元素来计算平均值；
+    const AVERAGE_RECORDS_COUNT = 20;
+    if (vector.length > AVERAGE_RECORDS_COUNT) {
+      vector.shift(-1);  // 维护容器大小；
+    } else {
+      return 'NaN';
+    }
+    // 计算平均每帧在绘制过程中所消耗的时间；
+    let averageTime = (vector.reduce((pre, item) => {
+      return pre + item;
+    }, 0) / Math.abs(AVERAGE_RECORDS_COUNT));
+    // 估算出 1s 内能够绘制的帧数；
+    return (1000 / averageTime).toFixed(2);
   }
-
 
   // drawing function;
   function draw() {
@@ -110,25 +124,26 @@ __ATPOSTRUN__.push(function () {
 
     // record performance;
     const timeStart = performance.now();
-    if (GLOBAL_STATUS === 'JS') {
-      pixels.data.set(filterJS(pixels.data, clientx, clienty));
-    }
-    if (GLOBAL_STATUS === 'WASM') {
-      pixels.data.set(filterWASM(pixels.data, clientx, clienty));
-    }
-    var timeUsed = Math.round(1000 / (performance.now() - timeStart));
+    console.log(GLOBAL_STATUS)
 
-    // update frame number;
-    if (GLOBAL_STATUS === 'JS') {
-      // push new time record into vector;
-      jsTimeRecords.push(timeUsed);
-      // calculate and update display;
-      fpsNumDisplayElement.innerHTML = getAverageTime(jsTimeRecords);
-    } else if (GLOBAL_STATUS === 'WASM') {
-      wasmTimeRecords.push(timeUsed);
-      fpsNumDisplayElement.innerHTML = getAverageTime(wasmTimeRecords);
-    } else {
-      fpsNumDisplayElement.innerHTML = 'NaN';
+    switch (GLOBAL_STATUS) {
+      case 'JS':
+        pixels.data.set(filterJS(pixels.data, clientx, clienty));
+        var timeUsed = Math.round(1000 / (performance.now() - timeStart));
+        // push new time record into vector;
+        jsTimeRecords.push(timeUsed);
+        // calculate and update display;
+        fpsNumDisplayElement.innerHTML = calcFPS(jsTimeRecords);
+        break;
+      case 'WASM':
+        pixels.data.set(filterWASM(pixels.data, clientx, clienty));
+        var timeUsed = Math.round(1000 / (performance.now() - timeStart));
+        wasmTimeRecords.push(timeUsed);
+        fpsNumDisplayElement.innerHTML = calcFPS(wasmTimeRecords);
+        break;
+      default:
+        fpsNumDisplayElement.innerHTML = 'NaN';
+        return
     }
 
     // append image onto the canvas;
@@ -145,17 +160,25 @@ __ATPOSTRUN__.push(function () {
   // get a canvas context;
   var context = canvas.getContext('2d');
 
+  function start() {
+    console.log("start")
+    if (GLOBAL_STATUS !== "STOP") {
+      // set the size of current stage;
+      canvas.setAttribute('height', video.videoHeight);
+      canvas.setAttribute('width', video.videoWidth);
+
+      // get the drawing size of the stage;
+      clientx = canvas.clientWidth;
+      clienty = canvas.clientHeight;
+
+      // start drawing!
+      draw(context);
+    }
+    console.log("stop")
+  }
+
   // init canvas;
   video.addEventListener("loadeddata", function () {
-    // set the size of current stage;
-    canvas.setAttribute('height', video.videoHeight);
-    canvas.setAttribute('width', video.videoWidth);
-
-    // get the drawing size of the stage;
-    clientx = canvas.clientWidth;
-    clienty = canvas.clientHeight;
-
-    // start drawing!
-    draw(context);
+    start()
   });
 });

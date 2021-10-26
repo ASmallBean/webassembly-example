@@ -1,6 +1,8 @@
 #include <emscripten.h>
 #include <cmath>
 
+// using namespace std;
+
 extern "C" void EMSCRIPTEN_KEEPALIVE convFilter (unsigned char* data, int width, int height, char* kern, int kWidth, int kHeight, int divisor) {
   int r, g, b;
   int yy, xx, imageOffset, kernelOffset, pix;
@@ -28,3 +30,5 @@ extern "C" void EMSCRIPTEN_KEEPALIVE convFilter (unsigned char* data, int width,
     }
   }
 }
+
+
