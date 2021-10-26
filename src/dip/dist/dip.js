@@ -1715,15 +1715,17 @@ __ATPOSTRUN__.push(function () {
   // 当前状态；
   let GLOBAL_STATUS = 'STOP';
   // 监听用户点击事件；
-  document.querySelector("button").addEventListener('click', () => {
-    GLOBAL_STATUS = STATUS[
-      Number(
-        document.querySelector("input[name='options']:checked").value
-      )
-    ];
-    start()
-  });
-
+  const eles = document.getElementsByClassName("radio-div")
+  for (let i = 0; i < eles.length; i++) {
+    eles[i].onclick = (e) => {
+      GLOBAL_STATUS = STATUS[
+        Number(
+          document.querySelector("input[name='options']:checked").value
+        )
+      ];
+      start()
+    };
+  }
 
   // variable and parameters;
   var fpsNumDisplayElement = document.querySelector('.fps-num');
@@ -1773,11 +1775,8 @@ __ATPOSTRUN__.push(function () {
   function filterWASM(pixelData, width, height) {
 
     const arLen = pixelData.length;
-    console.log(Module)
 
     const memData = Module['_malloc'](arLen * Uint8Array.BYTES_PER_ELEMENT);
-    console.log(memData)
-
     // fill data into buffer;
     HEAPU8.set(pixelData, memData / Uint8Array.BYTES_PER_ELEMENT);
 
@@ -1834,7 +1833,6 @@ __ATPOSTRUN__.push(function () {
 
     // record performance;
     const timeStart = performance.now();
-    console.log(GLOBAL_STATUS)
 
     switch (GLOBAL_STATUS) {
       case 'JS':
@@ -1872,7 +1870,7 @@ __ATPOSTRUN__.push(function () {
 
   function start() {
     console.log("start")
-    if (GLOBAL_STATUS !== "STOP") {
+    if (GLOBAL_STATUS === "JS" || GLOBAL_STATUS === "WASM") {
       // set the size of current stage;
       canvas.setAttribute('height', video.videoHeight);
       canvas.setAttribute('width', video.videoWidth);

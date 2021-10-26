@@ -5,20 +5,22 @@ __ATPOSTRUN__.push(function () {
   // 当前状态；
   let GLOBAL_STATUS = 'STOP';
   // 监听用户点击事件；
-  document.querySelector("button").addEventListener('click', () => {
-    GLOBAL_STATUS = STATUS[
-      Number(
-        document.querySelector("input[name='options']:checked").value
-      )
-    ];
-    start()
-  });
-
+  const eles = document.getElementsByClassName("radio-div")
+  for (let i = 0; i < eles.length; i++) {
+    eles[i].onclick = (e) => {
+      GLOBAL_STATUS = STATUS[
+        Number(
+          document.querySelector("input[name='options']:checked").value
+        )
+      ];
+      start()
+    };
+  }
 
   // variable and parameters;
   var fpsNumDisplayElement = document.querySelector('.fps-num');
   var jsTimeRecords = [], wasmTimeRecords = [];
-  var clientx, clienty;
+  var clientX, clientY;
 
   // filters related stuff;
   var kernel = [
@@ -63,11 +65,8 @@ __ATPOSTRUN__.push(function () {
   function filterWASM(pixelData, width, height) {
 
     const arLen = pixelData.length;
-    console.log(Module)
 
     const memData = Module['_malloc'](arLen * Uint8Array.BYTES_PER_ELEMENT);
-    console.log(memData)
-
     // fill data into buffer;
     HEAPU8.set(pixelData, memData / Uint8Array.BYTES_PER_ELEMENT);
 
@@ -124,11 +123,10 @@ __ATPOSTRUN__.push(function () {
 
     // record performance;
     const timeStart = performance.now();
-    console.log(GLOBAL_STATUS)
 
     switch (GLOBAL_STATUS) {
       case 'JS':
-        pixels.data.set(filterJS(pixels.data, clientx, clienty));
+        pixels.data.set(filterJS(pixels.data, clientX, clientY));
         var timeUsed = Math.round(1000 / (performance.now() - timeStart));
         // push new time record into vector;
         jsTimeRecords.push(timeUsed);
@@ -136,7 +134,7 @@ __ATPOSTRUN__.push(function () {
         fpsNumDisplayElement.innerHTML = calcFPS(jsTimeRecords);
         break;
       case 'WASM':
-        pixels.data.set(filterWASM(pixels.data, clientx, clienty));
+        pixels.data.set(filterWASM(pixels.data, clientX, clientY));
         var timeUsed = Math.round(1000 / (performance.now() - timeStart));
         wasmTimeRecords.push(timeUsed);
         fpsNumDisplayElement.innerHTML = calcFPS(wasmTimeRecords);
@@ -162,14 +160,14 @@ __ATPOSTRUN__.push(function () {
 
   function start() {
     console.log("start")
-    if (GLOBAL_STATUS !== "STOP") {
+    if (GLOBAL_STATUS === "JS" || GLOBAL_STATUS === "WASM") {
       // set the size of current stage;
       canvas.setAttribute('height', video.videoHeight);
       canvas.setAttribute('width', video.videoWidth);
 
       // get the drawing size of the stage;
-      clientx = canvas.clientWidth;
-      clienty = canvas.clientHeight;
+      clientX = canvas.clientWidth;
+      clientY = canvas.clientHeight;
 
       // start drawing!
       draw(context);
