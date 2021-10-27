@@ -33,6 +33,7 @@ build.fib.wasm:
 build.fib.html:
 	@emcc ${FIB_DIR}/main.cpp -o ${FIB_DIR}/html/index.html
 
+# --cpuprofiler --memoryprofiler --threadprofiler
 
 .PHONY: build.fib.js
 build.fib.js:

@@ -16,7 +16,11 @@ int fib(int x){
 int main(){
   int t1,t2;
   t1 = clock();
-  fib(40);
+
+  // for( int a = 10; a < 35; a = a + 1 )
+  // {
+      fib(40);
+  // }
   t2 = clock();
   cout<< (t2 - t1)/1000 <<"ms"<<endl;
 	return 0;

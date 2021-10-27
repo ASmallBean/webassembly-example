@@ -17,7 +17,7 @@ var Module = typeof Module !== 'undefined' ? Module : {};
 
 // --pre-jses are emitted after the Module integration code, so that they can
 // refer to Module (if they choose; they can also define Module)
-// {{PRE_JSES}}
+
 
 // Sometimes an existing Module object exists with properties
 // meant to overwrite the default module functionality. Here
@@ -776,13 +776,6 @@ function cwrap(ident, returnType, argTypes, opts) {
 
 // We used to include malloc/free by default in the past. Show a helpful error in
 // builds with assertions.
-function _malloc() {
-  abort("malloc() called but not included in the build - add '_malloc' to EXPORTED_FUNCTIONS");
-}
-function _free() {
-  // Show a helpful error since we used to include free by default in the past.
-  abort("free() called but not included in the build - add '_free' to EXPORTED_FUNCTIONS");
-}
 
 var ALLOC_NORMAL = 0; // Tries to use _malloc()
 var ALLOC_STACK = 1; // Lives for the duration of the current function call
@@ -803,7 +796,7 @@ function allocate(slab, allocator) {
   if (allocator == ALLOC_STACK) {
     ret = stackAlloc(slab.length);
   } else {
-    ret = abort('malloc was not included, but is needed in allocate. Adding "_malloc" to EXPORTED_FUNCTIONS should fix that. This may be a bug in the compiler, please file an issue.');;
+    ret = _malloc(slab.length);
   }
 
   if (slab.subarray || slab.slice) {
@@ -1149,7 +1142,7 @@ function lengthBytesUTF32(str) {
 // It is the responsibility of the caller to free() that memory.
 function allocateUTF8(str) {
   var size = lengthBytesUTF8(str) + 1;
-  var ret = abort('malloc was not included, but is needed in allocateUTF8. Adding "_malloc" to EXPORTED_FUNCTIONS should fix that. This may be a bug in the compiler, please file an issue.');;
+  var ret = _malloc(size);
   if (ret) stringToUTF8Array(str, HEAP8, ret, size);
   return ret;
 }
@@ -1526,6 +1519,634 @@ function abort(what) {
 // include: memoryprofiler.js
 
 
+var emscriptenMemoryProfiler = {
+  // If true, walks all allocated pointers at graphing time to print a detailed
+  // memory fragmentation map. If false, used memory is only graphed in one
+  // block (at the bottom of DYNAMIC memory space). Set this to false to improve
+  // performance at the expense of accuracy.
+  detailedHeapUsage: true,
+
+  // Allocations of memory blocks larger than this threshold will get their
+  // detailed callstack captured and logged at runtime.
+  trackedCallstackMinSizeBytes: (typeof new Error().stack === 'undefined') ? Infinity : 16*1024*1024,
+
+  // Allocations from call sites having more than this many outstanding
+  // allocated pointers will get their detailed callstack captured and logged at
+  // runtime.
+  trackedCallstackMinAllocCount: (typeof new Error().stack === 'undefined') ? Infinity : 10000,
+
+  // If true, we hook into stackAlloc to be able to catch better estimate of the
+  // maximum used STACK space.  You might only ever want to set this to false
+  // for performance reasons. Since stack allocations may occur often, this
+  // might impact performance.
+  hookStackAlloc: true,
+
+  // How often the log page is refreshed.
+  uiUpdateIntervalMsecs: 2000,
+
+  // Tracks data for the allocation statistics.
+  allocationsAtLoc: {},
+  allocationSitePtrs: {},
+
+  // Stores an associative array of records HEAP ptr -> size so that we can
+  // retrieve how much memory was freed in calls to _free() and decrement the
+  // tracked usage accordingly.
+  // E.g. sizeOfAllocatedPtr[address] returns the size of the heap pointer
+  // starting at 'address'.
+  sizeOfAllocatedPtr: {},
+
+  // Conceptually same as the above array, except this one tracks only pointers
+  // that were allocated during the application preRun step, which corresponds
+  // to the data added to the VFS with --preload-file.
+  sizeOfPreRunAllocatedPtr: {},
+
+  resizeMemorySources: [],
+    // stack: <string>,
+    // begin: <int>,
+    // end: <int>
+
+  sbrkSources: [],
+    // stack: <string>,
+    // begin: <int>,
+    // end: <int>
+
+  // Once set to true, preRun is finished and the above array is not touched anymore.
+  pagePreRunIsFinished: false,
+
+  // Grand total of memory currently allocated via malloc(). Decremented on free()s.
+  totalMemoryAllocated: 0,
+
+  // The running count of the number of times malloc() and free() have been
+  // called in the app. Used to keep track of # of currently alive pointers.
+  // TODO: Perhaps in the future give a statistic of allocations per second to
+  // see how trashing memory usage is.
+  totalTimesMallocCalled: 0,
+  totalTimesFreeCalled: 0,
+
+  // Tracks the highest seen location of the stack pointer.
+  stackTopWatermark: Infinity,
+
+  // The canvas DOM element to which to draw the allocation map.
+  canvas: null,
+
+  // The 2D drawing context on the canvas.
+  drawContext: null,
+
+  // Converts number f to string with at most two decimals, without redundant trailing zeros.
+  truncDec: function truncDec(f) {
+    f = f || 0;
+    var str = f.toFixed(2);
+    if (str.includes('.00', str.length-3)) return str.substr(0, str.length-3);
+    else if (str.includes('0', str.length-1)) return str.substr(0, str.length-1);
+    else return str;
+  },
+
+  // Converts a number of bytes pretty-formatted as a string.
+  formatBytes: function formatBytes(bytes) {
+    if (bytes >= 1000*1024*1024) return emscriptenMemoryProfiler.truncDec(bytes/(1024*1024*1024)) + ' GB';
+    else if (bytes >= 1000*1024) return emscriptenMemoryProfiler.truncDec(bytes/(1024*1024)) + ' MB';
+    else if (bytes >= 1000) return emscriptenMemoryProfiler.truncDec(bytes/1024) + ' KB';
+    else return emscriptenMemoryProfiler.truncDec(bytes) + ' B';
+  },
+
+  // HSV values in [0..1[, returns a RGB string in format '#rrggbb'
+  hsvToRgb: function hsvToRgb(h, s, v) {
+    var h_i = (h*6)|0;
+    var f = h*6 - h_i;
+    var p = v * (1 - s);
+    var q = v * (1 - f*s);
+    var t = v * (1 - (1 - f) * s);
+    var r, g, b;
+    switch (h_i) {
+      case 0: r = v; g = t; b = p; break;
+      case 1: r = q; g = v; b = p; break;
+      case 2: r = p; g = v; b = t; break;
+      case 3: r = p; g = q; b = v; break;
+      case 4: r = t; g = p; b = v; break;
+      case 5: r = v; g = p; b = q; break;
+    }
+    function toHex(v) {
+      v = (v*255|0).toString(16);
+      return (v.length == 1) ? '0' + v : v;
+    }
+    return '#' + toHex(r) + toHex(g) + toHex(b);
+  },
+
+  onSbrkGrow: function onSbrkGrow(oldLimit, newLimit) {
+    var self = emscriptenMemoryProfiler;
+    // On first sbrk(), account for the initial size.
+    if (self.sbrkSources.length == 0) {
+      self.sbrkSources.push({
+        stack: "initial heap sbrk limit<br>",
+        begin: 0,
+        end: oldLimit,
+        color: self.hsvToRgb(self.sbrkSources.length * 0.618033988749895 % 1, 0.5, 0.95)
+      });
+    }
+    if (newLimit <= oldLimit) return;
+    self.sbrkSources.push({
+      stack: self.filterCallstackForHeapResize(new Error().stack.toString()),
+      begin: oldLimit,
+      end: newLimit,
+      color: self.hsvToRgb(self.sbrkSources.length * 0.618033988749895 % 1, 0.5, 0.95)
+    });
+  },
+
+  onMemoryResize: function onMemoryResize(oldSize, newSize) {
+    var self = emscriptenMemoryProfiler;
+    // On first heap resize, account for the initial size.
+    if (self.resizeMemorySources.length == 0) {
+      self.resizeMemorySources.push({
+        stack: "initial heap size<br>",
+        begin: 0,
+        end: oldSize,
+        color: self.resizeMemorySources.length % 2 ? '#ff00ff' : '#ff80ff'
+      });
+    }
+    if (newSize <= oldSize) return;
+    self.resizeMemorySources.push({
+      stack: self.filterCallstackForHeapResize(new Error().stack.toString()),
+      begin: oldSize,
+      end: newSize,
+      color: self.resizeMemorySources.length % 2 ? '#ff00ff' : '#ff80ff'
+    });
+    console.log('memory resize: ' + oldSize + ' ' + newSize);
+  },
+
+  recordStackWatermark: function() {
+    if (typeof runtimeInitialized === 'undefined' || runtimeInitialized) {
+      var self = emscriptenMemoryProfiler;
+      self.stackTopWatermark = Math.min(self.stackTopWatermark, _emscripten_stack_get_current());
+    }
+  },
+
+  onMalloc: function onMalloc(ptr, size) {
+    if (!ptr) return;
+    if (emscriptenMemoryProfiler.sizeOfAllocatedPtr[ptr])
+    {
+// Uncomment to debug internal workings of tracing:
+//      console.error('Allocation error in onMalloc! Pointer ' + ptr + ' had already been tracked as allocated!');
+//      console.error('Previous site of allocation: ' + emscriptenMemoryProfiler.allocationSitePtrs[ptr]);
+//      console.error('This doubly attempted site of allocation: ' + new Error().stack.toString());
+//      throw 'malloc internal inconsistency!';
+      return;
+    }
+    var self = emscriptenMemoryProfiler;
+    // Gather global stats.
+    self.totalMemoryAllocated += size;
+    ++self.totalTimesMallocCalled;
+
+    self.recordStackWatermark();
+
+    // Remember the size of the allocated block to know how much will be _free()d later.
+    self.sizeOfAllocatedPtr[ptr] = size;
+    // Also track if this was a _malloc performed at preRun time.
+    if (!self.pagePreRunIsFinished) self.sizeOfPreRunAllocatedPtr[ptr] = size;
+
+    var loc = new Error().stack.toString();
+    if (!self.allocationsAtLoc[loc]) self.allocationsAtLoc[loc] = [0, 0, self.filterCallstackForMalloc(loc)];
+    self.allocationsAtLoc[loc][0] += 1;
+    self.allocationsAtLoc[loc][1] += size;
+    self.allocationSitePtrs[ptr] = loc;
+  },
+
+  onFree: function onFree(ptr) {
+    if (!ptr) return;
+
+    var self = emscriptenMemoryProfiler;
+
+    // Decrement global stats.
+    var sz = self.sizeOfAllocatedPtr[ptr];
+    if (!isNaN(sz)) self.totalMemoryAllocated -= sz;
+    else
+    {
+// Uncomment to debug internal workings of tracing:
+//      console.error('Detected double free of pointer ' + ptr + ' at location:\n'+ new Error().stack.toString());
+//      throw 'double free!';
+      return;
+    }
+
+    self.recordStackWatermark();
+
+    var loc = self.allocationSitePtrs[ptr];
+    if (loc) {
+      var allocsAtThisLoc = self.allocationsAtLoc[loc];
+      if (allocsAtThisLoc) {
+        allocsAtThisLoc[0] -= 1;
+        allocsAtThisLoc[1] -= sz;
+        if (allocsAtThisLoc[0] <= 0) delete self.allocationsAtLoc[loc];
+      }
+    }
+    delete self.allocationSitePtrs[ptr];
+    delete self.sizeOfAllocatedPtr[ptr];
+    delete self.sizeOfPreRunAllocatedPtr[ptr]; // Also free if this happened to be a _malloc performed at preRun time.
+    ++self.totalTimesFreeCalled;
+  },
+
+  onRealloc: function onRealloc(oldAddress, newAddress, size) {
+    emscriptenMemoryProfiler.onFree(oldAddress);
+    emscriptenMemoryProfiler.onMalloc(newAddress, size);
+  },
+
+  onPreloadComplete: function onPreloadComplete() {
+    emscriptenMemoryProfiler.pagePreRunIsFinished = true;
+  },
+
+  // Installs startup hook and periodic UI update timer.
+  initialize: function initialize() {
+    // Inject the memoryprofiler hooks.
+    Module['onMalloc'] = function onMalloc(ptr, size) { emscriptenMemoryProfiler.onMalloc(ptr, size); };
+    Module['onRealloc'] = function onRealloc(oldAddress, newAddress, size) { emscriptenMemoryProfiler.onRealloc(oldAddress, newAddress, size); };
+    Module['onFree'] = function onFree(ptr) { emscriptenMemoryProfiler.onFree(ptr); };
+    emscriptenMemoryProfiler.recordStackWatermark();
+
+    // Add a tracking mechanism to detect when VFS loading is complete.
+    if (!Module['preRun']) Module['preRun'] = [];
+    Module['preRun'].push(function() { emscriptenMemoryProfiler.onPreloadComplete(); });
+
+    if (emscriptenMemoryProfiler.hookStackAlloc && typeof stackAlloc === 'function') {
+      // Inject stack allocator.
+      var prevStackAlloc = stackAlloc;
+      var hookedStackAlloc = function(size) {
+        var ptr = prevStackAlloc(size);
+        emscriptenMemoryProfiler.recordStackWatermark();
+        return ptr;
+      }
+      stackAlloc = hookedStackAlloc;
+    }
+
+    if (location.search.toLowerCase().includes('trackbytes=')) {
+      emscriptenMemoryProfiler.trackedCallstackMinSizeBytes = parseInt(location.search.substr(location.search.toLowerCase().indexOf('trackbytes=') + 'trackbytes='.length), undefined /* https://github.com/google/closure-compiler/issues/3230 / https://github.com/google/closure-compiler/issues/3548 */);
+    }
+    if (location.search.toLowerCase().includes('trackcount=')) {
+      emscriptenMemoryProfiler.trackedCallstackMinAllocCount = parseInt(location.search.substr(location.search.toLowerCase().indexOf('trackcount=') + 'trackcount='.length), undefined);
+    }
+
+    emscriptenMemoryProfiler.memoryprofiler_summary = document.getElementById('memoryprofiler_summary');
+    var div;
+    if (!emscriptenMemoryProfiler.memoryprofiler_summary) {
+      div = document.createElement("div");
+      div.innerHTML = "<div style='border: 2px solid black; padding: 2px;'><canvas style='border: 1px solid black; margin-left: auto; margin-right: auto; display: block;' id='memoryprofiler_canvas' width='100%' height='50'></canvas><input type='checkbox' id='showHeapResizes' onclick='emscriptenMemoryProfiler.updateUi()'>Display heap and sbrk() resizes. Filter sbrk() and heap resize callstacks by keywords: <input type='text' id='sbrkFilter'>(reopen page with ?sbrkFilter=foo,bar query params to prepopulate this list)<br/>Track all allocation sites larger than <input id='memoryprofiler_min_tracked_alloc_size' type=number value="+emscriptenMemoryProfiler.trackedCallstackMinSizeBytes+"></input> bytes, and all allocation sites with more than <input id='memoryprofiler_min_tracked_alloc_count' type=number value="+emscriptenMemoryProfiler.trackedCallstackMinAllocCount+"></input> outstanding allocations. (visit this page via URL query params foo.html?trackbytes=1000&trackcount=100 to apply custom thresholds starting from page load)<br/><div id='memoryprofiler_summary'></div><input id='memoryprofiler_clear_alloc_stats' type='button' value='Clear alloc stats' ></input><br />Sort allocations by:<select id='memoryProfilerSort'><option value='bytes'>Bytes</option><option value='count'>Count</option><option value='fixed'>Fixed</option></select><div id='memoryprofiler_ptrs'></div>";
+    }
+    var populateHtmlBody = function() {
+      if (div) {
+        document.body.appendChild(div);
+
+        function getValueOfParam(key) {
+          var results = (new RegExp("[\\?&]"+key+"=([^&#]*)")).exec(location.href);
+          return results ? results[1] : '';
+        }
+        // Allow specifying a precreated filter in page URL ?query parameters for convenience.
+        if (document.getElementById('sbrkFilter').value = getValueOfParam('sbrkFilter')) {
+          document.getElementById('showHeapResizes').checked = true;
+        }
+      }
+      var self = emscriptenMemoryProfiler;
+      self.memoryprofiler_summary = document.getElementById('memoryprofiler_summary');
+      self.memoryprofiler_ptrs = document.getElementById('memoryprofiler_ptrs');
+
+      document.getElementById('memoryprofiler_min_tracked_alloc_size').addEventListener("change", function(e){self.trackedCallstackMinSizeBytes=parseInt(this.value, undefined /* https://github.com/google/closure-compiler/issues/3230 / https://github.com/google/closure-compiler/issues/3548 */);});
+      document.getElementById('memoryprofiler_min_tracked_alloc_count').addEventListener("change", function(e){self.trackedCallstackMinAllocCount=parseInt(this.value, undefined);});
+      document.getElementById('memoryprofiler_clear_alloc_stats').addEventListener("click", function(e){self.allocationsAtLoc = {}; self.allocationSitePtrs = {};});
+      self.canvas = document.getElementById('memoryprofiler_canvas');
+      self.canvas.width = document.documentElement.clientWidth - 32;
+      self.drawContext = self.canvas.getContext('2d');
+
+      self.updateUi();
+      setInterval(function() { emscriptenMemoryProfiler.updateUi() }, self.uiUpdateIntervalMsecs);
+
+    };
+    // User might initialize memoryprofiler in the <head> of a page, when
+    // document.body does not yet exist. In that case, delay initialization
+    // of the memoryprofiler UI until page has loaded
+    if (document.body) populateHtmlBody();
+    else setTimeout(populateHtmlBody, 1000);
+  },
+
+  // Given a pointer 'bytes', compute the linear 1D position on the graph as
+  // pixels, rounding down for start address of a block.
+  bytesToPixelsRoundedDown: function bytesToPixelsRoundedDown(bytes) {
+    return (bytes * emscriptenMemoryProfiler.canvas.width * emscriptenMemoryProfiler.canvas.height / HEAP8.length) | 0;
+  },
+
+  // Same as bytesToPixelsRoundedDown, but rounds up for the end address of a
+  // block. The different rounding will guarantee that even 'thin' allocations
+  // should get at least one pixel dot in the graph.
+  bytesToPixelsRoundedUp: function bytesToPixelsRoundedUp(bytes) {
+    return ((bytes * emscriptenMemoryProfiler.canvas.width * emscriptenMemoryProfiler.canvas.height + HEAP8.length - 1) / HEAP8.length) | 0;
+  },
+
+  // Graphs a range of allocated memory. The memory range will be drawn as a
+  // top-to-bottom, left-to-right stripes or columns of pixels.
+  fillLine: function fillLine(startBytes, endBytes) {
+    var self = emscriptenMemoryProfiler;
+    var startPixels = self.bytesToPixelsRoundedDown(startBytes);
+    var endPixels = self.bytesToPixelsRoundedUp(endBytes);
+
+    // Starting pos (top-left corner) of this allocation on the graph.
+    var x0 = (startPixels / self.canvas.height) | 0;
+    var y0 = startPixels - x0 * self.canvas.height;
+    // Ending pos (bottom-right corner) of this allocation on the graph.
+    var x1 = (endPixels / self.canvas.height) | 0;
+    var y1 = endPixels - x1 * self.canvas.height;
+
+    // Draw the left side partial column of the allocation block.
+    if (y0 > 0 && x0 < x1) {
+      self.drawContext.fillRect(x0, y0, 1, self.canvas.height - y0);
+      // Proceed to the start of the next full column.
+      y0 = 0;
+      ++x0;
+    }
+    // Draw the right side partial column.
+    if (y1 < self.canvas.height && x0 < x1) {
+      self.drawContext.fillRect(x1, 0, 1, y1);
+      // Decrement to the previous full column.
+      y1 = self.canvas.height - 1;
+      --x1;
+    }
+    // After filling the previous leftovers with one-pixel-wide lines, we are
+    // only left with a rectangular shape of full columns to blit.
+    self.drawContext.fillRect(x0, 0, x1 - x0 + 1, self.canvas.height);
+  },
+
+  // Fills a rectangle of given height % that overlaps the byte range given.
+  fillRect: function fillRect(startBytes, endBytes, heightPercentage) {
+    var self = emscriptenMemoryProfiler;
+    var startPixels = self.bytesToPixelsRoundedDown(startBytes);
+    var endPixels = self.bytesToPixelsRoundedUp(endBytes);
+
+    var x0 = (startPixels / self.canvas.height) | 0;
+    var x1 = (endPixels / self.canvas.height) | 0;
+    self.drawContext.fillRect(x0, self.canvas.height * (1.0 - heightPercentage), x1 - x0 + 1, self.canvas.height);
+  },
+
+  countOpenALAudioDataSize: function countOpenALAudioDataSize() {
+    if (typeof AL == "undefined" || !AL.currentContext) return 0;
+
+    var totalMemory = 0;
+
+    for (var i in AL.currentContext.buf) {
+      var buffer = AL.currentContext.buf[i];
+      for (var channel = 0; channel < buffer.numberOfChannels; ++channel) totalMemory += buffer.getChannelData(channel).length * 4;
+    }
+    return totalMemory;
+  },
+
+  // Print accurate map of individual allocations. This will show information about
+  // memory fragmentation and allocation sizes.
+  // Warning: This will walk through all allocations, so it is slow!
+  printAllocsWithCyclingColors: function printAllocsWithCyclingColors(colors, allocs) {
+    var colorIndex = 0;
+    for (var i in allocs) {
+      emscriptenMemoryProfiler.drawContext.fillStyle = colors[colorIndex];
+      colorIndex = (colorIndex + 1) % colors.length;
+      var start = i|0;
+      var sz = allocs[start]|0;
+      emscriptenMemoryProfiler.fillLine(start, start + sz);
+    }
+  },
+
+  filterURLsFromCallstack: function(callstack) {
+    // Hide paths from URLs to make the log more readable
+    callstack = callstack.replace(/@((file)|(http))[\w:\/\.]*\/([\w\.]*)/g, '@$4');
+    callstack = callstack.replace(/\n/g, '<br />');
+    return callstack;
+  },
+
+  // given callstack of func1\nfunc2\nfunc3... and function name, cuts the tail from the callstack
+  // for anything after the function func.
+  filterCallstackAfterFunctionName: function(callstack, func) {
+    var i = callstack.indexOf(func);
+    if (i != -1) {
+      var end = callstack.indexOf('<br />', i);
+      if (end != -1) {
+        return callstack.substr(0, end);
+      }
+    }
+    return callstack;
+  },
+
+  filterCallstackForMalloc: function(callstack) {
+    // Do not show Memoryprofiler's own callstacks in the callstack prints.
+    var i = callstack.indexOf('emscripten_trace_record_');
+    if (i != -1) {
+      callstack = callstack.substr(callstack.indexOf('\n', i)+1);
+    }
+    return emscriptenMemoryProfiler.filterURLsFromCallstack(callstack);
+  },
+
+  filterCallstackForHeapResize: function(callstack) {
+    // Do not show Memoryprofiler's own callstacks in the callstack prints.
+    var i = callstack.indexOf('emscripten_asm_const_iii');
+    var j = callstack.indexOf('emscripten_realloc_buffer');
+    i = (i == -1) ? j : (j == -1 ? i : Math.min(i, j));
+    if (i != -1) {
+      callstack = callstack.substr(callstack.indexOf('\n', i)+1);
+    }
+    callstack = callstack.replace(/(wasm-function\[\d+\]):0x[0-9a-f]+/g, "$1");
+    return emscriptenMemoryProfiler.filterURLsFromCallstack(callstack);
+  },
+
+  printHeapResizeLog: function(heapResizes) {
+    var demangler = typeof demangleAll !== 'undefined' ? demangleAll : function(x) { return x; };
+    var html = '';
+    for (var i = 0; i < heapResizes.length; ++i) {
+      var j = i+1;
+      while(j < heapResizes.length) {
+        if ((heapResizes[j].filteredStack || heapResizes[j].stack) == (heapResizes[i].filteredStack || heapResizes[i].stack)) {
+          ++j;
+        } else {
+          break;
+        }
+      }
+      var resizeFirst = heapResizes[i];
+      var resizeLast = heapResizes[j-1];
+      var count = j - i;
+      html += '<div style="background-color: ' + resizeFirst.color + '"><b>' + resizeFirst.begin + '-' + resizeLast.end + ' (' + count + ' times, ' + emscriptenMemoryProfiler.formatBytes(resizeLast.end-resizeFirst.begin) + ')</b>:' + demangler(resizeFirst.filteredStack || resizeFirst.stack) + '</div><br>';
+      i = j-1;
+    }
+    return html;
+  },
+
+  // Main UI update entry point.
+  updateUi: function updateUi() {
+    // It is common to set 'overflow: hidden;' on canvas pages that do WebGL. When MemoryProfiler is being used, there will be a long block of text on the page, so force-enable scrolling.
+    if (document.body.style.overflow != '') document.body.style.overflow = '';
+    function colorBar(color) {
+      return '<span style="padding:0px; border:solid 1px black; width:28px;height:14px; vertical-align:middle; display:inline-block; background-color:'+color+';"></span>';
+    }
+
+    // Naive function to compute how many bits will be needed to represent the number 'n' in binary. This will be our pointer 'word width' in the UI.
+    function nBits(n) {
+      var i = 0;
+      while (n >= 1) {
+        ++i;
+        n /= 2;
+      }
+      return i;
+    }
+
+    // Returns i formatted to string as fixed-width hexadecimal.
+    function toHex(i, width) {
+      var str = i.toString(16);
+      while (str.length < width) str = '0' + str;
+      return '0x'+str;
+    }
+
+    var self = emscriptenMemoryProfiler;
+
+    // Poll whether user as changed the browser window, and if so, resize the profiler window and redraw it.
+    if (self.canvas.width != document.documentElement.clientWidth - 32) {
+      self.canvas.width = document.documentElement.clientWidth - 32;
+    }
+
+    if (typeof runtimeInitialized !== 'undefined' && !runtimeInitialized) {
+      return;
+    }
+    var stackBase = _emscripten_stack_get_base();
+    var stackMax = _emscripten_stack_get_end();
+    var stackCurrent = _emscripten_stack_get_current();
+    var width = (nBits(HEAP8.length) + 3) / 4; // Pointer 'word width'
+    var html = 'Total HEAP size: ' + self.formatBytes(HEAP8.length) + '.';
+    html += '<br />' + colorBar('#202020') + 'STATIC memory area size: ' + self.formatBytes(stackMax - 1024);
+    html += '. 1024: ' + toHex(1024, width);
+
+    html += '<br />' + colorBar('#FF8080') + 'STACK memory area size: ' + self.formatBytes(stackBase - stackMax);
+    html += '. STACK_BASE: ' + toHex(stackBase, width);
+    html += '. STACKTOP: ' + toHex(stackCurrent, width);
+    html += '. STACK_MAX: ' + toHex(stackMax, width) + '.';
+    html += '<br />STACK memory area used now (should be zero): ' + self.formatBytes(stackBase - stackCurrent) + '.' + colorBar('#FFFF00') + ' STACK watermark highest seen usage (approximate lower-bound!): ' + self.formatBytes(stackBase - self.stackTopWatermark);
+
+    var heap_base = Module['___heap_base'];
+    var heap_end = _sbrk();
+    html += "<br />DYNAMIC memory area size: " + self.formatBytes(heap_end - heap_base);
+    html += ". start: " + toHex(heap_base, width);
+    html += ". end: " + toHex(heap_end, width) + ".";
+    html += "<br />" + colorBar("#6699CC") + colorBar("#003366") + colorBar("#0000FF") + "DYNAMIC memory area used: " + self.formatBytes(self.totalMemoryAllocated) + " (" + (self.totalMemoryAllocated * 100 / (HEAP8.length - heap_base)).toFixed(2) + "% of all dynamic memory and unallocated heap)";
+    html += "<br />Free memory: " + colorBar("#70FF70") + "DYNAMIC: " + self.formatBytes(heap_end - heap_base - self.totalMemoryAllocated) + ", " + colorBar('#FFFFFF') + 'Unallocated HEAP: ' + self.formatBytes(HEAP8.length - heap_end) + " (" + ((HEAP8.length - heap_base - self.totalMemoryAllocated) * 100 / (HEAP8.length - heap_base)).toFixed(2) + "% of all dynamic memory and unallocated heap)";
+
+    var preloadedMemoryUsed = 0;
+    for (var i in self.sizeOfPreRunAllocatedPtr) preloadedMemoryUsed += self.sizeOfPreRunAllocatedPtr[i]|0;
+    html += '<br />' + colorBar('#FF9900') + colorBar('#FFDD33') + 'Preloaded memory used, most likely memory reserved by files in the virtual filesystem : ' + self.formatBytes(preloadedMemoryUsed);
+
+    html += '<br />OpenAL audio data: ' + self.formatBytes(self.countOpenALAudioDataSize()) + ' (outside HEAP)';
+    html += '<br /># of total malloc()s/free()s performed in app lifetime: ' + self.totalTimesMallocCalled + '/' + self.totalTimesFreeCalled + ' (currently alive pointers: ' + (self.totalTimesMallocCalled-self.totalTimesFreeCalled) + ')';
+
+    // Background clear
+    self.drawContext.fillStyle = "#FFFFFF";
+    self.drawContext.fillRect(0, 0, self.canvas.width, self.canvas.height);
+
+    self.drawContext.fillStyle = "#FF8080";
+    self.fillLine(stackMax, stackBase);
+
+    self.drawContext.fillStyle = "#FFFF00";
+    self.fillLine(self.stackTopWatermark, stackBase);
+
+    self.drawContext.fillStyle = "#FF0000";
+    self.fillLine(stackCurrent, stackBase);
+
+    self.drawContext.fillStyle = "#70FF70";
+    self.fillLine(heap_base, heap_end);
+
+    if (self.detailedHeapUsage) {
+      self.printAllocsWithCyclingColors(["#6699CC", "#003366", "#0000FF"], self.sizeOfAllocatedPtr);
+      self.printAllocsWithCyclingColors(["#FF9900", "#FFDD33"], self.sizeOfPreRunAllocatedPtr);
+    } else {
+      // Print only a single naive blob of individual allocations. This will not be accurate, but is constant-time.
+      self.drawContext.fillStyle = "#0000FF";
+      self.fillLine(heap_base, heap_base + self.totalMemoryAllocated);
+    }
+
+    if (document.getElementById('showHeapResizes').checked) {
+      // Print heap resize traces.
+      for (var i in self.resizeMemorySources) {
+        var resize = self.resizeMemorySources[i];
+        self.drawContext.fillStyle = resize.color;
+        self.fillRect(resize.begin, resize.end, 0.5);
+      }
+
+      // Print sbrk() traces.
+      var uniqueSources = {};
+      var filterWords = document.getElementById('sbrkFilter').value.split(',');
+      for (var i in self.sbrkSources) {
+        var sbrk = self.sbrkSources[i];
+        var stack = sbrk.stack;
+        for (var j in filterWords) {
+          var s = filterWords[j].trim();
+          if (s.length > 0)
+          stack = self.filterCallstackAfterFunctionName(stack, s);
+        }
+        sbrk.filteredStack = stack;
+        if (!uniqueSources[stack]) {
+          uniqueSources[stack] = self.hsvToRgb(Object.keys(uniqueSources).length * 0.618033988749895 % 1, 0.5, 0.95);
+        }
+        self.drawContext.fillStyle = sbrk.color = uniqueSources[stack];
+        self.fillRect(sbrk.begin, sbrk.end, 0.25);
+      }
+
+      // Print a divider line to make the sbrk()/heap resize block more prominently visible compared to the rest of the allocations.
+      function line(x0, y0, x1, y1) {
+        self.drawContext.beginPath();
+        self.drawContext.moveTo(x0, y0);
+        self.drawContext.lineTo(x1, y1);
+        self.drawContext.lineWidth = 2;
+        self.drawContext.stroke();
+      }
+      if (self.sbrkSources.length > 0) line(0, 0.75*self.canvas.height, self.canvas.width, 0.75*self.canvas.height);
+      if (self.resizeMemorySources.length > 0) line(0, 0.5*self.canvas.height, self.canvas.width, 0.5*self.canvas.height);
+    }
+
+    self.memoryprofiler_summary.innerHTML = html;
+
+    var sort = document.getElementById('memoryProfilerSort');
+    var sortOrder = sort.options[sort.selectedIndex].value;
+
+    html = '';
+
+    // Print out sbrk() and memory resize subdivisions:
+    if (document.getElementById('showHeapResizes').checked) {
+      // Print heap resize traces.
+      html += '<div style="background-color: #c0c0c0"><h4>Heap resize locations:</h4>';
+      html += self.printHeapResizeLog(self.resizeMemorySources);
+      html += '</div>'
+
+      // Print heap sbrk traces.
+      html += '<div style="background-color: #c0c0ff"><h4>Memory sbrk() locations:</h4>';
+      html += self.printHeapResizeLog(self.sbrkSources);
+      html += '</div>'
+    } else {
+      var demangler = typeof demangleAll !== 'undefined' ? demangleAll : function(x) { return x; };
+      // Print out statistics of individual allocations if they were tracked.
+      if (Object.keys(self.allocationsAtLoc).length > 0) {
+        var calls = [];
+        for (var i in self.allocationsAtLoc) {
+          if (self.allocationsAtLoc[i][0] >= self.trackedCallstackMinAllocCount || self.allocationsAtLoc[i][1] >= self.trackedCallstackMinSizeBytes) {
+            calls.push(self.allocationsAtLoc[i]);
+          }
+        }
+        if (calls.length > 0) {
+          if (sortOrder != 'fixed') {
+            var sortIdx = (sortOrder == 'count') ? 0 : 1;
+            calls.sort(function(a,b) { return b[sortIdx] - a[sortIdx]; });
+          }
+          html += '<h4>Allocation sites with more than ' + self.formatBytes(self.trackedCallstackMinSizeBytes) + ' of accumulated allocations, or more than ' + self.trackedCallstackMinAllocCount + ' simultaneously outstanding allocations:</h4>'
+          for (var i in calls) {
+            if (calls[i].length == 3) calls[i] = [calls[i][0], calls[i][1], calls[i][2], demangler(calls[i][2])];
+            html += "<b>" + self.formatBytes(calls[i][1]) + '/' + calls[i][0] + " allocs</b>: " + calls[i][3] + "<br />";
+          }
+        }
+      }
+    }
+    self.memoryprofiler_ptrs.innerHTML = html;
+  }
+};
+
+// Backwards compatibility with previously compiled code. Don't call this
+// anymore!
+function memoryprofiler_add_hooks() { emscriptenMemoryProfiler.initialize(); }
+
+if (typeof Module !== 'undefined' && typeof document !== 'undefined' && typeof window !== 'undefined' && typeof process === 'undefined') emscriptenMemoryProfiler.initialize();
+
 // end include: memoryprofiler.js
 // include: URIUtils.js
 
@@ -1731,7 +2352,7 @@ var tempI64;
 // === Body ===
 
 var ASM_CONSTS = {
-  
+  14712: function($0, $1) {if (typeof emscriptenMemoryProfiler !== 'undefined') emscriptenMemoryProfiler.onSbrkGrow($0, $1)}
 };
 
 
@@ -1847,6 +2468,35 @@ var ASM_CONSTS = {
       return ((Date.now() - _clock.start) * (1000000 / 1000))|0;
     }
 
+  var readAsmConstArgsArray = [];
+  function readAsmConstArgs(sigPtr, buf) {
+      ;
+      // Nobody should have mutated _readAsmConstArgsArray underneath us to be something else than an array.
+      assert(Array.isArray(readAsmConstArgsArray));
+      // The input buffer is allocated on the stack, so it must be stack-aligned.
+      assert(buf % 16 == 0);
+      readAsmConstArgsArray.length = 0;
+      var ch;
+      // Most arguments are i32s, so shift the buffer pointer so it is a plain
+      // index into HEAP32.
+      buf >>= 2;
+      while (ch = HEAPU8[sigPtr++]) {
+        assert(ch === 100/*'d'*/ || ch === 102/*'f'*/ || ch === 105 /*'i'*/);
+        // A double takes two 32-bit slots, and must also be aligned - the backend
+        // will emit padding to avoid that.
+        var readAsmConstArgsDouble = ch < 105;
+        if (readAsmConstArgsDouble && (buf & 1)) buf++;
+        readAsmConstArgsArray.push(readAsmConstArgsDouble ? HEAPF64[buf++ >> 1] : HEAP32[buf]);
+        ++buf;
+      }
+      return readAsmConstArgsArray;
+    }
+  function _emscripten_asm_const_int(code, sigPtr, argbuf) {
+      var args = readAsmConstArgs(sigPtr, argbuf);
+      if (!ASM_CONSTS.hasOwnProperty(code)) abort('No EM_ASM constant found at address ' + code);
+      return ASM_CONSTS[code].apply(null, args);
+    }
+
   function _emscripten_memcpy_big(dest, src, num) {
       HEAPU8.copyWithin(dest, src, src + num);
     }
@@ -1858,6 +2508,156 @@ var ASM_CONSTS = {
       var oldSize = HEAPU8.length;
       requestedSize = requestedSize >>> 0;
       abortOnCannotGrowMemory(requestedSize);
+    }
+
+  function _emscripten_trace_js_configure(collector_url, application) {
+      EmscriptenTrace.configure(collector_url, application);
+    }
+  
+  function _emscripten_trace_configure_for_google_wtf() {
+      EmscriptenTrace.configureForGoogleWTF();
+    }
+  
+  function _emscripten_trace_js_enter_context(name) {
+      if (EmscriptenTrace.postEnabled) {
+        var now = EmscriptenTrace.now();
+        EmscriptenTrace.post([EmscriptenTrace.EVENT_ENTER_CONTEXT,
+                              now, name]);
+      }
+      if (EmscriptenTrace.googleWTFEnabled) {
+        EmscriptenTrace.googleWTFEnterScope(name);
+      }
+    }
+  
+  function _emscripten_trace_exit_context() {
+      if (EmscriptenTrace.postEnabled) {
+        var now = EmscriptenTrace.now();
+        EmscriptenTrace.post([EmscriptenTrace.EVENT_EXIT_CONTEXT, now]);
+      }
+      if (EmscriptenTrace.googleWTFEnabled) {
+        EmscriptenTrace.googleWTFExitScope();
+      }
+    }
+  
+  function _emscripten_trace_js_log_message(channel, message) {
+      if (EmscriptenTrace.postEnabled) {
+        var now = EmscriptenTrace.now();
+        EmscriptenTrace.post([EmscriptenTrace.EVENT_LOG_MESSAGE, now,
+                              channel, message]);
+      }
+    }
+  
+  function _emscripten_trace_js_mark(message) {
+      if (EmscriptenTrace.postEnabled) {
+        var now = EmscriptenTrace.now();
+        EmscriptenTrace.post([EmscriptenTrace.EVENT_LOG_MESSAGE, now,
+                              "MARK", message]);
+      }
+      if (EmscriptenTrace.googleWTFEnabled) {
+        window['wtf'].trace.mark(message);
+      }
+    }
+  
+  var _emscripten_get_now;if (ENVIRONMENT_IS_NODE) {
+    _emscripten_get_now = function() {
+      var t = process['hrtime']();
+      return t[0] * 1e3 + t[1] / 1e6;
+    };
+  } else _emscripten_get_now = function() { return performance.now(); }
+  ;
+  var EmscriptenTrace = {worker:null,collectorEnabled:false,googleWTFEnabled:false,testingEnabled:false,googleWTFData:{scopeStack:[],cachedScopes:{}},DATA_VERSION:1,EVENT_ALLOCATE:"allocate",EVENT_ANNOTATE_TYPE:"annotate-type",EVENT_APPLICATION_NAME:"application-name",EVENT_ASSOCIATE_STORAGE_SIZE:"associate-storage-size",EVENT_ENTER_CONTEXT:"enter-context",EVENT_EXIT_CONTEXT:"exit-context",EVENT_FRAME_END:"frame-end",EVENT_FRAME_RATE:"frame-rate",EVENT_FRAME_START:"frame-start",EVENT_FREE:"free",EVENT_LOG_MESSAGE:"log-message",EVENT_MEMORY_LAYOUT:"memory-layout",EVENT_OFF_HEAP:"off-heap",EVENT_REALLOCATE:"reallocate",EVENT_REPORT_ERROR:"report-error",EVENT_SESSION_NAME:"session-name",EVENT_TASK_ASSOCIATE_DATA:"task-associate-data",EVENT_TASK_END:"task-end",EVENT_TASK_RESUME:"task-resume",EVENT_TASK_START:"task-start",EVENT_TASK_SUSPEND:"task-suspend",EVENT_USER_NAME:"user-name",init:function() {
+        Module['emscripten_trace_configure'] = _emscripten_trace_js_configure;
+        Module['emscripten_trace_configure_for_google_wtf'] = _emscripten_trace_configure_for_google_wtf;
+        Module['emscripten_trace_enter_context'] = _emscripten_trace_js_enter_context;
+        Module['emscripten_trace_exit_context'] = _emscripten_trace_exit_context;
+        Module['emscripten_trace_log_message'] = _emscripten_trace_js_log_message;
+        Module['emscripten_trace_mark'] = _emscripten_trace_js_mark;
+      },loadWorkerViaXHR:function(url, ready, scope) {
+        var req = new XMLHttpRequest();
+        req.addEventListener('load', function() {
+          var blob = new Blob([this.responseText], { type: 'text/javascript' });
+          var worker = new Worker(window.URL.createObjectURL(blob));
+          if (ready) {
+            ready.call(scope, worker);
+          }
+        }, req);
+        req.open("get", url, false);
+        req.send();
+      },configure:function(collector_url, application) {
+        EmscriptenTrace.now = _emscripten_get_now;
+        var now = new Date();
+        var session_id = now.getTime().toString() + '_' +
+                            Math.floor((Math.random() * 100) + 1).toString();
+        EmscriptenTrace.loadWorkerViaXHR(collector_url + 'worker.js', function (worker) {
+          EmscriptenTrace.worker = worker;
+          EmscriptenTrace.worker.addEventListener('error', function (e) {
+            out('TRACE WORKER ERROR:');
+            out(e);
+          }, false);
+          EmscriptenTrace.worker.postMessage({ 'cmd': 'configure',
+                                               'data_version': EmscriptenTrace.DATA_VERSION,
+                                               'session_id': session_id,
+                                               'url': collector_url });
+          EmscriptenTrace.configured = true;
+          EmscriptenTrace.collectorEnabled = true;
+          EmscriptenTrace.postEnabled = true;
+        });
+        EmscriptenTrace.post([EmscriptenTrace.EVENT_APPLICATION_NAME, application]);
+        EmscriptenTrace.post([EmscriptenTrace.EVENT_SESSION_NAME, now.toISOString()]);
+      },configureForTest:function() {
+        EmscriptenTrace.postEnabled = true;
+        EmscriptenTrace.testingEnabled = true;
+        EmscriptenTrace.now = function() { return 0.0; };
+      },configureForGoogleWTF:function() {
+        if (window && window['wtf']) {
+          EmscriptenTrace.googleWTFEnabled = true;
+        } else {
+          out('GOOGLE WTF NOT AVAILABLE TO ENABLE');
+        }
+      },post:function(entry) {
+        if (EmscriptenTrace.postEnabled && EmscriptenTrace.collectorEnabled) {
+          EmscriptenTrace.worker.postMessage({ 'cmd': 'post',
+                                               'entry': entry });
+        } else if (EmscriptenTrace.postEnabled && EmscriptenTrace.testingEnabled) {
+          out('Tracing ' + entry);
+        }
+      },googleWTFEnterScope:function(name) {
+        var scopeEvent = EmscriptenTrace.googleWTFData['cachedScopes'][name];
+        if (!scopeEvent) {
+          scopeEvent = window['wtf'].trace.events.createScope(name);
+          EmscriptenTrace.googleWTFData['cachedScopes'][name] = scopeEvent;
+        }
+        var scope = scopeEvent();
+        EmscriptenTrace.googleWTFData['scopeStack'].push(scope);
+      },googleWTFExitScope:function() {
+        var scope = EmscriptenTrace.googleWTFData['scopeStack'].pop();
+        window['wtf'].trace.leaveScope(scope);
+      }};
+  function _emscripten_trace_record_allocation(address, size) {
+      if (typeof Module['onMalloc'] === 'function') Module['onMalloc'](address, size);
+      if (EmscriptenTrace.postEnabled) {
+        var now = EmscriptenTrace.now();
+        EmscriptenTrace.post([EmscriptenTrace.EVENT_ALLOCATE,
+                              now, address, size]);
+      }
+    }
+
+  function _emscripten_trace_record_free(address) {
+      if (typeof Module['onFree'] === 'function') Module['onFree'](address);
+      if (EmscriptenTrace.postEnabled) {
+        var now = EmscriptenTrace.now();
+        EmscriptenTrace.post([EmscriptenTrace.EVENT_FREE,
+                              now, address]);
+      }
+    }
+
+  function _emscripten_trace_record_reallocation(old_address, new_address, size) {
+      if (typeof Module['onRealloc'] === 'function') Module['onRealloc'](old_address, new_address, size);
+      if (EmscriptenTrace.postEnabled) {
+        var now = EmscriptenTrace.now();
+        EmscriptenTrace.post([EmscriptenTrace.EVENT_REALLOCATE,
+                              now, old_address, new_address, size]);
+      }
     }
 
   var ENV = {};
@@ -4684,6 +5484,7 @@ var ASM_CONSTS = {
   function _strftime_l(s, maxsize, format, tm) {
       return _strftime(s, maxsize, format, tm); // no locale support yet
     }
+EmscriptenTrace.init();
 
   var FSNode = /** @constructor */ function(parent, name, mode, rdev) {
     if (!parent) {
@@ -4887,8 +5688,12 @@ var asmLibraryArg = {
   "__cxa_atexit": ___cxa_atexit,
   "abort": _abort,
   "clock": _clock,
+  "emscripten_asm_const_int": _emscripten_asm_const_int,
   "emscripten_memcpy_big": _emscripten_memcpy_big,
   "emscripten_resize_heap": _emscripten_resize_heap,
+  "emscripten_trace_record_allocation": _emscripten_trace_record_allocation,
+  "emscripten_trace_record_free": _emscripten_trace_record_free,
+  "emscripten_trace_record_reallocation": _emscripten_trace_record_reallocation,
   "environ_get": _environ_get,
   "environ_sizes_get": _environ_sizes_get,
   "fd_close": _fd_close,
@@ -4921,6 +5726,11 @@ var stackRestore = Module["stackRestore"] = createExportWrapper("stackRestore");
 var stackAlloc = Module["stackAlloc"] = createExportWrapper("stackAlloc");
 
 /** @type {function(...*):?} */
+var _emscripten_stack_get_current = Module["_emscripten_stack_get_current"] = function() {
+  return (_emscripten_stack_get_current = Module["_emscripten_stack_get_current"] = Module["asm"]["emscripten_stack_get_current"]).apply(null, arguments);
+};
+
+/** @type {function(...*):?} */
 var _emscripten_stack_init = Module["_emscripten_stack_init"] = function() {
   return (_emscripten_stack_init = Module["_emscripten_stack_init"] = Module["asm"]["emscripten_stack_init"]).apply(null, arguments);
 };
@@ -4931,9 +5741,23 @@ var _emscripten_stack_get_free = Module["_emscripten_stack_get_free"] = function
 };
 
 /** @type {function(...*):?} */
+var _emscripten_stack_get_base = Module["_emscripten_stack_get_base"] = function() {
+  return (_emscripten_stack_get_base = Module["_emscripten_stack_get_base"] = Module["asm"]["emscripten_stack_get_base"]).apply(null, arguments);
+};
+
+/** @type {function(...*):?} */
 var _emscripten_stack_get_end = Module["_emscripten_stack_get_end"] = function() {
   return (_emscripten_stack_get_end = Module["_emscripten_stack_get_end"] = Module["asm"]["emscripten_stack_get_end"]).apply(null, arguments);
 };
+
+/** @type {function(...*):?} */
+var _free = Module["_free"] = createExportWrapper("free");
+
+/** @type {function(...*):?} */
+var _malloc = Module["_malloc"] = createExportWrapper("malloc");
+
+/** @type {function(...*):?} */
+var _sbrk = Module["_sbrk"] = createExportWrapper("sbrk");
 
 /** @type {function(...*):?} */
 var dynCall_jiji = Module["dynCall_jiji"] = createExportWrapper("dynCall_jiji");
@@ -4950,7 +5774,7 @@ var dynCall_iiiiiijj = Module["dynCall_iiiiiijj"] = createExportWrapper("dynCall
 /** @type {function(...*):?} */
 var dynCall_viijii = Module["dynCall_viijii"] = createExportWrapper("dynCall_viijii");
 
-
+var ___heap_base = Module['___heap_base'] = 5263664;
 
 
 
@@ -5171,6 +5995,7 @@ if (!Object.getOwnPropertyDescriptor(Module, "GLFW")) Module["GLFW"] = function(
 if (!Object.getOwnPropertyDescriptor(Module, "GLEW")) Module["GLEW"] = function() { abort("'GLEW' was not exported. add it to EXPORTED_RUNTIME_METHODS (see the FAQ)") };
 if (!Object.getOwnPropertyDescriptor(Module, "IDBStore")) Module["IDBStore"] = function() { abort("'IDBStore' was not exported. add it to EXPORTED_RUNTIME_METHODS (see the FAQ)") };
 if (!Object.getOwnPropertyDescriptor(Module, "runAndAbortIfError")) Module["runAndAbortIfError"] = function() { abort("'runAndAbortIfError' was not exported. add it to EXPORTED_RUNTIME_METHODS (see the FAQ)") };
+if (!Object.getOwnPropertyDescriptor(Module, "EmscriptenTrace")) Module["EmscriptenTrace"] = function() { abort("'EmscriptenTrace' was not exported. add it to EXPORTED_RUNTIME_METHODS (see the FAQ)") };
 if (!Object.getOwnPropertyDescriptor(Module, "warnOnce")) Module["warnOnce"] = function() { abort("'warnOnce' was not exported. add it to EXPORTED_RUNTIME_METHODS (see the FAQ)") };
 if (!Object.getOwnPropertyDescriptor(Module, "stackSave")) Module["stackSave"] = function() { abort("'stackSave' was not exported. add it to EXPORTED_RUNTIME_METHODS (see the FAQ)") };
 if (!Object.getOwnPropertyDescriptor(Module, "stackRestore")) Module["stackRestore"] = function() { abort("'stackRestore' was not exported. add it to EXPORTED_RUNTIME_METHODS (see the FAQ)") };
@@ -5392,3 +6217,741 @@ run();
 
 
 
+
+
+// cpuprofiler.js is an interactive CPU execution profiler which measures the time spent in executing code that utilizes requestAnimationFrame(), setTimeout() and/or setInterval() handlers to run.
+// Visit https://github.com/emscripten-core/emscripten for the latest version.
+
+// performance.now() might get faked later (this is done in the openwebgames.com test harness), so save the real one for cpu profiler.
+// However, in Safari, assigning to the performance object will mysteriously vanish in other imported .js <script>, so for that, replace
+// the whole object. That doesn't work for Chrome in turn, so need to resort to user agent sniffing.. (sad :/)
+if (!performance.realNow) {
+  var isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+  if (isSafari) {
+    var realPerformance = performance;
+    performance = {
+      realNow: function() { return realPerformance.now(); },
+      now: function() { return realPerformance.now(); }
+    };
+  } else {
+    performance.realNow = performance.now;
+  }
+}
+
+var emscriptenCpuProfiler = {
+  // UI update interval in milliseconds.
+  uiUpdateInterval: 1,
+
+  // Specifies the pixel column where the previous UI update finished at. (current "draw cursor" position next draw will resume from)
+  lastUiUpdateEndX: 0,
+
+  // An array which stores samples of msec durations spent in the emscripten main loop (emscripten_set_main_loop).
+  // Carries # samples equal to the pixel width of the profiler display window, and old samples are erased in a rolling window fashion.
+  timeSpentInMainloop: [],
+
+  // Similar to 'timeSpentInMainloop', except this stores msec durations outside the emscripten main loop callback. (either idle CPU time, browser processing, or something else)
+  timeSpentOutsideMainloop: [],
+
+  // Specifies the sample coordinate into the timeSpentIn/OutsideMainloop arrays that is currently being populated.
+  currentHistogramX: 0,
+
+  // Wallclock time denoting when the currently executing main loop callback tick began.
+  currentFrameStartTime: 0,
+
+  // Wallclock time denoting when the previously executing main loop was finished.
+  previousFrameEndTime: 0,
+
+  // The total time spent in a frame can be further subdivided down into 'sections'. This array stores info structures representing each section.
+  sections: [],
+
+  // The 2D canvas DOM element to which the CPU profiler graph is rendered to.
+  canvas: null,
+
+  // The 2D drawing context on the canvas.
+  drawContext: null,
+
+  // How many milliseconds in total to fit vertically into the displayed CPU profiler window? Frametimes longer than this are out the graph and not visible.
+  verticalTimeScale: 40,
+
+  // History of wallclock times of N most recent frame times. Used to estimate current FPS.
+  fpsCounterTicks: [],
+
+  // When was the FPS UI display last updated?
+  fpsCounterLastPrint: performance.realNow(),
+
+  fpsCounterNumMostRecentFrames: 120,
+
+  fpsCounterUpdateInterval: 2000, // msecs
+
+  insideMainLoopRecursionCounter: 0, // Used to detect recursive entries to the main loop, which can happen in certain complex cases, e.g. if not using rAF to tick rendering to the canvas.
+
+  // fpsCounter() is called once per frame to record an executed frame time, and to periodically update the FPS counter display.
+  fpsCounter: function fpsCounter() {
+    // Record the new frame time sample, and prune the history to K most recent frames.
+    var now = performance.realNow();
+    if (this.fpsCounterTicks.length < this.fpsCounterNumMostRecentFrames) this.fpsCounterTicks.push(now);
+    else {
+      for (var i = 0; i < this.fpsCounterTicks.length-1; ++i) this.fpsCounterTicks[i] = this.fpsCounterTicks[i+1];
+      this.fpsCounterTicks[this.fpsCounterTicks.length-1] = now;
+    }
+  
+    if (now - this.fpsCounterLastPrint > this.fpsCounterUpdateInterval) {
+      var fps = ((this.fpsCounterTicks.length - 1) * 1000.0 / (this.fpsCounterTicks[this.fpsCounterTicks.length - 1] - this.fpsCounterTicks[0]));
+      var totalDt = 0;
+      var totalRAFDt = 0;
+      var minDt = 99999999;
+      var maxDt = 0;
+      var nSamples = 0;
+
+      var numSamplesToAccount = Math.min(this.timeSpentInMainloop.length, 120);
+      var startX = (this.currentHistogramX - numSamplesToAccount + this.canvas.width) % this.canvas.width;
+      for (var i = 0; i < numSamplesToAccount; ++i) {
+        var x = (startX + i) % this.canvas.width;
+        var dt = this.timeSpentInMainloop[x] + this.timeSpentOutsideMainloop[x];
+        totalRAFDt += this.timeSpentInMainloop[x];
+        if (dt > 0) ++nSamples;
+        totalDt += dt;
+        minDt = Math.min(minDt, dt);
+        maxDt = Math.max(maxDt, dt);
+      }
+      var avgDt = totalDt / nSamples;
+      var avgFps = 1000.0 / avgDt;
+      var dtVariance = 0;
+      for (var i = 1; i < numSamplesToAccount; ++i) {
+        var x = (startX + i) % this.canvas.width;
+        var dt = this.timeSpentInMainloop[x] + this.timeSpentOutsideMainloop[x];
+        var d = dt - avgDt;
+        dtVariance += d*d;
+      }
+      dtVariance /= nSamples;
+
+      var asmJSLoad = totalRAFDt * 100.0 / totalDt;
+
+      // Compute the overhead added by WebGL:
+      var hotGL = this.sections[0];
+      var coldGL = this.sections[1];
+      var webGLMSecsInsideMainLoop = (hotGL ? hotGL.accumulatedFrameTimeInsideMainLoop(startX, numSamplesToAccount) : 0) + (coldGL ? coldGL.accumulatedFrameTimeInsideMainLoop(startX, numSamplesToAccount) : 0);
+      var webGLMSecsOutsideMainLoop = (hotGL ? hotGL.accumulatedFrameTimeOutsideMainLoop(startX, numSamplesToAccount) : 0) + (coldGL ? coldGL.accumulatedFrameTimeOutsideMainLoop(startX, numSamplesToAccount) : 0);
+      var webGLMSecs = webGLMSecsInsideMainLoop + webGLMSecsOutsideMainLoop;
+
+      var setIntervalSection = this.sections[2];
+      var setTimeoutSection = this.sections[3];
+      var totalCPUMsecs = totalRAFDt + setIntervalSection.accumulatedFrameTimeOutsideMainLoop(startX, numSamplesToAccount) + setTimeoutSection.accumulatedFrameTimeOutsideMainLoop(startX, numSamplesToAccount);
+
+      // Update full FPS counter
+      var str = 'Last FPS: ' + fps.toFixed(2) + ', avg FPS:' + avgFps.toFixed(2) + ', min/avg/max dt: '
+       + minDt.toFixed(2) + '/' + avgDt.toFixed(2) + '/' + maxDt.toFixed(2) + ' msecs, dt variance: ' + dtVariance.toFixed(3)
+       + ', JavaScript CPU load: ' + asmJSLoad.toFixed(2) + '%';
+
+      if (hotGL || coldGL) {
+        str += '. WebGL CPU load: ' + (webGLMSecs * 100.0 / totalDt).toFixed(2) + '% (' + (webGLMSecs * 100.0 / totalCPUMsecs).toFixed(2) + '% of all CPU work)';
+      }
+      document.getElementById('fpsResult').innerHTML = str;
+
+      // Update lite FPS counter
+      if (this.fpsOverlay1) {
+        this.fpsOverlay1.innerText = fps.toFixed(1) + ' (' + asmJSLoad.toFixed(1) + '%)';
+        this.fpsOverlay1.style.color = fps >= 30 ? 'lightgreen' : fps >= 15 ? 'yellow' : 'red';
+        this.fpsOverlay2.innerText = minDt.toFixed(2) + '/' + avgDt.toFixed(2) + '/' + maxDt.toFixed(2) + ' ms';
+      }
+
+      this.fpsCounterLastPrint = now;
+    }
+  },
+
+  // Creates a new section. Call once at startup.
+  createSection: function createSection(number, name, drawColor, traceable) {
+    while (this.sections.length <= number) this.sections.push(null); // Keep an array structure.
+    var sect = this.sections[number];
+    if (!sect) {
+      sect = {
+        count: 0,
+        name: name,
+        startTick: 0,
+        accumulatedTimeInsideMainLoop: 0,
+        accumulatedTimeOutsideMainLoop: 0,
+        frametimesInsideMainLoop: [],
+        frametimesOutsideMainLoop: [],
+        drawColor: drawColor,
+        traceable: traceable,
+        accumulatedFrameTimeInsideMainLoop: function(startX, numSamples) {
+          var total = 0;
+          numSamples = Math.min(numSamples, this.frametimesInsideMainLoop.length);
+          for (var i = 0; i < numSamples; ++i) {
+            var x = (startX + i) % this.frametimesInsideMainLoop.length;
+            if (this.frametimesInsideMainLoop[x]) total += this.frametimesInsideMainLoop[x];
+          }
+          return total;
+        },
+        accumulatedFrameTimeOutsideMainLoop: function(startX, numSamples) {
+          var total = 0;
+          numSamples = Math.min(numSamples, this.frametimesInsideMainLoop.length);
+          for (var i = 0; i < numSamples; ++i) {
+            var x = (startX + i) % this.frametimesInsideMainLoop.length;
+            if (this.frametimesOutsideMainLoop[x]) total += this.frametimesOutsideMainLoop[x];
+          }
+          return total;
+        }
+      };
+    }
+    sect.name = name;
+    this.sections[number] = sect;
+  },
+
+  // Call at runtime whenever the code execution enter a given profiling section.
+  enterSection: function enterSection(sectionNumber) {
+    var sect = this.sections[sectionNumber];
+    // Handle recursive entering without getting confused (subsequent re-entering is ignored)
+    ++sect.count;
+    if (sect.count == 1) sect.startTick = performance.realNow();
+  },
+
+  // Call at runtime when the code execution exits the given profiling section.
+  // Be sure to match each startSection(x) call with a call to endSection(x).
+  endSection: function endSection(sectionNumber) {
+    var sect = this.sections[sectionNumber];
+    --sect.count;
+    if (sect.count == 0) {
+      var timeInSection = performance.realNow() - sect.startTick;
+      if (sect.traceable && timeInSection > this.logWebGLCallsSlowerThan) {
+        var funcs = new Error().stack.toString().split('\n');
+        var cs = '';
+        for (var i = 2; i < 5 && i < funcs.length; ++i) {
+          if (i != 2) cs += ' <- ';
+          var fn = funcs[i];
+          var at = fn.indexOf('@');
+          if (at != -1) fn = fn.substr(0, at);
+          fn = fn.trim();
+          cs += '"' + fn + '"';
+        }
+        
+        console.error('Trace: at t=' + performance.realNow().toFixed(1) + ', section "' + sect.name + '" called via ' + cs + ' took ' + timeInSection.toFixed(2) + ' msecs!');
+      }
+      if (this.insideMainLoopRecursionCounter) sect.accumulatedTimeInsideMainLoop += timeInSection;
+      else sect.accumulatedTimeOutsideMainLoop += timeInSection;
+    }
+  },
+
+  // Called in the beginning of each main loop frame tick.
+  frameStart: function frameStart() {
+    this.insideMainLoopRecursionCounter++;
+    if (this.insideMainLoopRecursionCounter == 1) {
+      this.currentFrameStartTime = performance.realNow();
+      this.fpsCounter();
+    }
+  },
+
+  // Called in the end of each main loop frame tick.
+  frameEnd: function frameEnd() {
+    this.insideMainLoopRecursionCounter--;
+    if (this.insideMainLoopRecursionCounter != 0) return;
+
+    // Aggregate total times spent in each section to memory store to wait until the next stats UI redraw period.
+    for (var i = 0; i < this.sections.length; ++i) {
+      var sect = this.sections[i];
+      if (!sect) continue;
+      sect.frametimesInsideMainLoop[this.currentHistogramX] = sect.accumulatedTimeInsideMainLoop;
+      sect.frametimesOutsideMainLoop[this.currentHistogramX] = sect.accumulatedTimeOutsideMainLoop;
+      sect.accumulatedTimeInsideMainLoop = 0;
+      sect.accumulatedTimeOutsideMainLoop = 0;
+    }
+    
+    var t = performance.realNow();
+    var cpuMainLoopDuration = t - this.currentFrameStartTime;
+    var durationBetweenFrameUpdates = t - this.previousFrameEndTime;
+    this.previousFrameEndTime = t;
+
+    this.timeSpentInMainloop[this.currentHistogramX] = cpuMainLoopDuration;
+    this.timeSpentOutsideMainloop[this.currentHistogramX] = durationBetweenFrameUpdates - cpuMainLoopDuration;
+
+    this.currentHistogramX = (this.currentHistogramX + 1) % this.canvas.width;
+    // Redraw the UI if it is now time to do so.
+    if ((this.currentHistogramX - this.lastUiUpdateEndX + this.canvas.width) % this.canvas.width >= this.uiUpdateInterval) {
+      this.updateUi(this.lastUiUpdateEndX, this.currentHistogramX);
+      this.lastUiUpdateEndX = this.currentHistogramX;
+    }
+  },
+
+  colorBackground: '#324B4B',
+  color60FpsBar: '#00FF00',
+  color30FpsBar: '#FFFF00',
+  colorTextLabel: '#C0C0C0',
+  colorCpuTimeSpentInUserCode: '#0000BB',
+  colorWorseThan30FPS: '#A06060',
+  colorWorseThan60FPS: '#A0A030',
+  color60FPS: '#40A040',
+  colorHotGLFunction: '#FF00FF',
+  colorColdGLFunction: '#0099CC',
+  colorSetIntervalSection: '#FF0000',
+  colorSetTimeoutSection: '#00FF00',
+
+  hotGLFunctions: ['activeTexture', 'bindBuffer', 'bindFramebuffer', 'bindTexture', 'blendColor', 'blendEquation', 'blendEquationSeparate', 'blendFunc', 'blendFuncSeparate', 'bufferSubData', 'clear', 'clearColor', 'clearDepth', 'clearStencil', 'colorMask', 'compressedTexSubImage2D', 'copyTexSubImage2D', 'cullFace', 'depthFunc', 'depthMask', 'depthRange', 'disable', 'disableVertexAttribArray', 'drawArrays', 'drawArraysInstanced', 'drawElements', 'drawElementsInstanced', 'enable', 'enableVertexAttribArray', 'frontFace', 'lineWidth', 'pixelStorei', 'polygonOffset', 'sampleCoverage', 'scissor', 'stencilFunc', 'stencilFuncSeparate', 'stencilMask', 'stencilMaskSeparate', 'stencilOp', 'stencilOpSeparate', 'texSubImage2D', 'useProgram', 'viewport', 'beginQuery', 'endQuery', 'bindVertexArray', 'drawBuffers', 'copyBufferSubData', 'blitFramebuffer', 'invalidateFramebuffer', 'invalidateSubFramebuffer', 'readBuffer', 'texSubImage3D', 'copyTexSubImage3D', 'compressedTexSubImage3D', 'vertexAttribDivisor', 'drawRangeElements', 'clearBufferiv', 'clearBufferuiv', 'clearBufferfv', 'clearBufferfi', 'bindSampler', 'bindTransformFeedback', 'beginTransformFeedback', 'endTransformFeedback', 'transformFeedbackVaryings', 'pauseTransformFeedback', 'resumeTransformFeedback', 'bindBufferBase', 'bindBufferRange', 'uniformBlockBinding'],
+
+  hookedWebGLContexts: [],
+  logWebGLCallsSlowerThan: Infinity,
+
+  toggleHelpTextVisible: function() {
+    var help = document.getElementById('cpuprofiler_help_text');
+    if (help.style) help.style.display = (help.style.display == 'none') ? 'block' : 'none';
+  },
+
+  // Installs the startup hooks and periodic UI update timer.
+  initialize: function initialize() {
+    // Hook into requestAnimationFrame function to grab animation even if application did not use emscripten_set_main_loop() to drive animation, but e.g. used its own function that performs requestAnimationFrame().
+    if (!window.realRequestAnimationFrame) {
+      window.realRequestAnimationFrame = window.requestAnimationFrame;
+      window.requestAnimationFrame = function(cb) {
+        function hookedCb(p) {
+          emscriptenCpuProfiler.frameStart();
+          cb(performance.now());
+          emscriptenCpuProfiler.frameEnd();
+        }
+        return window.realRequestAnimationFrame(hookedCb);
+      }
+    }
+
+    // Create the UI display if it doesn't yet exist. If you want to customize the location/style of the cpuprofiler UI,
+    // you can manually create this beforehand.
+    var cpuprofiler = document.getElementById('cpuprofiler');
+    if (!cpuprofiler) {
+      var css = '.colorbox { border: solid 1px black; margin-left: 10px; margin-right: 3px; display: inline-block; width: 20px; height: 10px; }  .hastooltip:hover .tooltip { display: block; } .tooltip { display: none; background: #FFFFFF; margin-left: 28px; padding: 5px; position: absolute; z-index: 1000; width:200px; } .hastooltip { margin:0px; }';
+      var style = document.createElement('style');
+      style.type = 'text/css';
+      style.appendChild(document.createTextNode(css));
+      document.head.appendChild(style);
+
+      var div = document.getElementById('cpuprofiler_container'); // Users can provide a container element where to place this if desired.
+      if (!div) {
+        div = document.createElement("div");
+        document.body.appendChild(div);
+
+        // It is common to set 'overflow: hidden;' on canvas pages that do WebGL. When CpuProfiler is being used, there will be a long block of text on the page, so force-enable scrolling.
+        document.body.style.overflow = '';
+      }
+      var helpText = "<div style='margin-left: 10px;'>Color Legend:";
+      helpText += "<div class='colorbox' style='background-color: " + this.colorCpuTimeSpentInUserCode + ";'></div>Main Loop (C/C++) Code"
+      helpText += "<div class='colorbox' style='background-color: " + this.colorHotGLFunction + ";'></div>Hot WebGL Calls"
+      helpText += "<div class='colorbox' style='background-color: " + this.colorColdGLFunction + ";'></div>Cold WebGL Calls"
+      helpText += "<div class='colorbox' style='background-color: " + this.color60FPS + ";'></div>Browser Execution (&ge; 60fps)"
+      helpText += "<div class='colorbox' style='background-color: " + this.colorWorseThan60FPS + ";'></div>Browser Execution (30-60fps)"
+      helpText += "<div class='colorbox' style='background-color: " + this.colorWorseThan30FPS + ";'></div>Browser Execution (&lt; 30fps)"
+      helpText += "<div class='colorbox' style='background-color: " + this.colorSetIntervalSection + ";'></div>setInterval()"
+      helpText += "<div class='colorbox' style='background-color: " + this.colorSetTimeoutSection + ";'></div>setTimeout()"
+      helpText += "</div>";
+      helpText += "<div id='cpuprofiler_help_text' style='display:none; margin-top: 20px; margin-left: 10px;'>"
+      helpText += "<p>cpuprofiler.js is an interactive CPU execution profiler which measures the time spent in executing code that utilizes requestAnimationFrame(), setTimeout() and/or setInterval() handlers to run. Each one pixel column in the above graph denotes a single executed application frame tick. The vertical axis represents in millisecond units the time taken to render a frame. Use this tool to interactively locate stuttering related events, and then use other profiling tools (<a href='https://developer.mozilla.org/en-US/docs/Tools/Performance'>Firefox profiler</a>, <a href='https://developer.mozilla.org/en-US/docs/Mozilla/Performance/Profiling_with_the_Built-in_Profiler'>geckoprofiler</a>) to identify their cause."
+      helpText += "<p>The header line above the graph prints out timing statistics:"
+      helpText += "<ul><li><b>Last FPS:</b> Displays the current FPS measured by averaging across " + this.fpsCounterNumMostRecentFrames + " most recently rendered frames.";
+      helpText += "<li><b>Avg FPS:</b> Displays the total FPS measured by averaging across the whole visible graph, i.e. <span id='ntotalframes'>" + (document.documentElement.clientWidth - 32) + "</span> most recently rendered frames.";
+      helpText += "<li><b>min/avg/max dt:</b> Displays the minimum, average and maximum durations that an application frame took overall, across the visible graph. These numbers include the time the browser was idle.";
+      helpText += "<li><b>dt variance:</b> Computes the amount of <a href='https://en.wikipedia.org/wiki/Variance'>statistical variance</a> in the overall frame durations.";
+      helpText += "<li><b>JavaScript CPU load:</b> This field estimates the amount of time the CPU was busy executing user code (requestAnimationFrame, setTimeout and setInterval handlers), with the simple assumption that the browser would be idle the remaining time.";
+      helpText += "<li><b>WebGL CPU load:</b> This field estimates the amount of time the CPU was busy running code inside the browser WebGL API. The value in parentheses shows the ratio of time that WebGL consumes of all per-frame CPU work.";
+      helpText += "</ul>Use the <span style='border: solid 1px #909090;'>Halt</span> button to abort page execution (Emscripten only). ";
+      helpText += "<br>Press the <span style='border: solid 1px #909090;'>Profile WebGL</span> button to toggle the profiling of WebGL CPU overhead. When the button background is displayed in green, WebGL CPU profiling is active. This profiling mode has some overhead by itself, so when recording profiles with other tools, prefer to leave this disabled.";
+      helpText += "<br>With the <span style='border: solid 1px #909090;'>Trace Calls</span> option, you can log WebGL and setInterval()/setTimeout() operations that take a long time to finish. These are typically cold operations like shader compilation or large reallocating buffer uploads, or other long event-based computation. For this option to be able to trace WebGL calls, the option Profile WebGL must also be enabled. The trace results appear in the web page console.";
+      helpText += "<p>The different colors on the graph have the following meaning:";
+      helpText += "<br><div class='colorbox' style='background-color: " + this.colorCpuTimeSpentInUserCode + ";'></div><b>Main Loop (C/C++) Code</b>: This is the time spent executing application JavaScript code inside the main loop event handler, generally via requestAnimationFrame().";
+      helpText += "<br><div class='colorbox' style='background-color: " + this.colorHotGLFunction + ";'></div><b>Hot WebGL Calls</b>: This measures the CPU time spent in running common per-frame rendering related WebGL calls: <div style='margin-left: 100px; margin-top: 10px; max-width: 800px; font-size: 12px;'>" + this.hotGLFunctions.join(', ') + ', uniform* and vertexAttrib*.</div>';
+      helpText += "<br><div class='colorbox' style='background-color: " + this.colorColdGLFunction + ";'></div><b>Cold WebGL Calls</b>: This shows the CPU time spent in all the remaining WebGL functions that are not considered 'hot' (not in the above list).";
+      helpText += "<br><div class='colorbox' style='background-color: " + this.color60FPS + ";'></div><b>Browser Execution (&ge; 60fps)</b>: This is the time taken by browser that falls outside the tracked requestAnimationFrame(), setTimeout() and/or setInterval() handlers. If the page is running at 60fps, the browser time will be drawn with this color. Likely the browser was idle waiting for vsync.";
+      helpText += "<br><div class='colorbox' style='background-color: " + this.colorWorseThan60FPS + ";'></div><b>Browser Execution (30-60fps)</b>: This is the same as above, except that when 60fps is not reached, the browser time is drawn in this color.";
+      helpText += "<br><div class='colorbox' style='background-color: " + this.colorWorseThan30FPS + ";'></div><b>Browser Execution (&lt; 30fps)</b>: Same as above, except that the frame completed slowly, so the browser time is drawn in this color. Long spikes of this color indicate that the browser is running some internal operations (e.g. garbage collection) that can cause stuttering.";
+      helpText += "<br><div class='colorbox' style='background-color: " + this.colorSetIntervalSection + ";'></div><b>setInterval()</b>: Specifies the amount of time spent in executing user code in setInterval() handlers.";
+      helpText += "<br><div class='colorbox' style='background-color: " + this.colorSetTimeoutSection + ";'></div><b>setTimeout()</b>: Specifies the amount of time spent in executing user code in setTimeout() handlers.";
+      helpText += "<p>For bugs and suggestions, visit <a href='https://github.com/emscripten-core/emscripten/issues'>Emscripten bug tracker</a>.";
+      helpText += "</div>";
+
+      div.innerHTML = "<div style='color: black; border: 2px solid black; padding: 2px; margin-bottom: 10px; margin-left: 5px; margin-right: 5px; margin-top: 5px; background-color: #F0F0FF;'><span style='margin-left: 10px;'><b>Cpu Profiler</b><sup style='cursor: pointer;' onclick='emscriptenCpuProfiler.toggleHelpTextVisible();'>[?]</sup></span> <button style='display:inline; border: solid 1px #ADADAD; margin: 2px; background-color: #E1E1E1;' onclick='noExitRuntime=false;Module.exit();'>Halt</button><button id='toggle_webgl_profile' style='display:inline; border: solid 1px #ADADAD; margin: 2px;  background-color: #E1E1E1;' onclick='emscriptenCpuProfiler.toggleHookWebGL()'>Profile WebGL</button><button id='toggle_webgl_trace' style='display:inline; border: solid 1px #ADADAD; margin: 2px;  background-color: #E1E1E1;' onclick='emscriptenCpuProfiler.toggleTraceWebGL()'>Trace Calls</button> slower than <input id='trace_limit' oninput='emscriptenCpuProfiler.disableTraceWebGL();' style='width:40px;' value='100'></input> msecs. <span id='fpsResult' style='margin-left: 5px;'></span><canvas style='border: 1px solid black; margin-left:auto; margin-right:auto; display: block;' id='cpuprofiler_canvas' width='800px' height='200'></canvas><div id='cpuprofiler'></div>" + helpText;
+      document.getElementById('trace_limit').onkeydown = function(e) { if (e.which == 13 || e.keycode == 13) emscriptenCpuProfiler.enableTraceWebGL(); else emscriptenCpuProfiler.disableTraceWebGL(); };
+      cpuprofiler = document.getElementById('cpuprofiler');
+
+      if (location.search.includes('expandhelp')) this.toggleHelpTextVisible();
+    }
+    
+    this.canvas = document.getElementById('cpuprofiler_canvas');
+    this.canvas.width = document.documentElement.clientWidth - 32;
+    this.drawContext = this.canvas.getContext('2d');
+
+    var webglCanvas = document.getElementById('canvas') || document.querySelector('canvas');
+
+    if (webglCanvas) {
+      // Create lite FPS overlay element
+      var fpsOverlay = document.createElement('div');
+      fpsOverlay.classList.add("hastooltip");
+      fpsOverlay.innerHTML = '<div id="fpsOverlay1" style="font-size: 1.5em; color: lightgreen; text-shadow: 3px 3px black;"></div><div id="fpsOverlay2" style="font-size: 1em; color: lightgrey; text-shadow: 3px 3px black;"></div> <span class="tooltip">FPS (CPU usage %)<br>Min/Avg/Max frame times (msecs)</span>';
+      fpsOverlay.style = 'position: fixed; font-weight: bold; padding: 3px; -webkit-touch-callout: none; -webkit-user-select: none; -khtml-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none; cursor: pointer;';
+      fpsOverlay.onclick = function() { var view = document.getElementById('cpuprofiler_canvas'); if (view) view.scrollIntoView(); }
+      fpsOverlay.oncontextmenu = function(e) { e.preventDefault(); };
+      document.body.appendChild(fpsOverlay);
+      this.fpsOverlay1 = document.getElementById('fpsOverlay1');
+      this.fpsOverlay2 = document.getElementById('fpsOverlay2');
+      function positionOverlay() {
+        var rect = webglCanvas.getBoundingClientRect();
+        var overlayHeight = fpsOverlay.getBoundingClientRect().height || fpsOverlay.height;
+        fpsOverlay.height = overlayHeight; // Remember the overlay height when it was visible, if it is hidden.
+        fpsOverlay.style.display = (rect.bottom >= overlayHeight) ? 'block' : 'none';
+        fpsOverlay.style.top = Math.max(rect.top, 0) + 'px';
+        fpsOverlay.style.left = Math.max(rect.left, 0) + 'px';
+      }
+      setTimeout(positionOverlay, 100);
+      setInterval(positionOverlay, 5000);
+      window.addEventListener('scroll', positionOverlay);
+    }
+
+    this.clearUi(0, this.canvas.width);
+    this.drawGraphLabels();
+    this.updateUi();
+    Module['preMainLoop'] = function cpuprofiler_frameStart() { emscriptenCpuProfiler.frameStart(); }
+    Module['postMainLoop'] = function cpuprofiler_frameEnd() { emscriptenCpuProfiler.frameEnd(); }
+  },
+
+  drawHorizontalLine: function drawHorizontalLine(startX, endX, pixelThickness, msecs) {
+    var height = msecs * this.canvas.height / this.verticalTimeScale;
+    this.drawContext.fillRect(startX,this.canvas.height - height, endX - startX, pixelThickness);
+  },
+
+  clearUi: function clearUi(startX, endX) {  
+    // Background clear
+    this.drawContext.fillStyle = this.colorBackground;
+    this.drawContext.fillRect(startX, 0, endX - startX, this.canvas.height);
+
+    this.drawContext.fillStyle = this.color60FpsBar;
+    this.drawHorizontalLine(startX, endX, 1, 16.6666666);
+    this.drawContext.fillStyle = this.color30FpsBar;
+    this.drawHorizontalLine(startX, endX, 1, 33.3333333);
+  },
+
+  drawGraphLabels: function drawGraphLabels() {
+    this.drawContext.fillStyle = this.colorTextLabel;
+    this.drawContext.font = "bold 10px Arial";
+    this.drawContext.textAlign = "right";
+    this.drawContext.fillText("16.66... ms", this.canvas.width - 3, this.canvas.height - 16.6666 * this.canvas.height / this.verticalTimeScale - 3);
+    this.drawContext.fillText("33.33... ms", this.canvas.width - 3, this.canvas.height - 33.3333 * this.canvas.height / this.verticalTimeScale - 3);
+  },
+
+  drawBar: function drawBar(x) {
+    var timeSpentInSectionsInsideMainLoop = 0;
+    for (var i = 0; i < this.sections.length; ++i) {
+      var sect = this.sections[i];
+      if (!sect) continue;
+      timeSpentInSectionsInsideMainLoop += sect.frametimesInsideMainLoop[x];
+    }
+    var scale = this.canvas.height / this.verticalTimeScale;
+    var y = this.canvas.height;
+    var h = (this.timeSpentInMainloop[x]-timeSpentInSectionsInsideMainLoop) * scale;
+    y -= h;
+    this.drawContext.fillStyle = this.colorCpuTimeSpentInUserCode;
+    this.drawContext.fillRect(x, y, 1, h);
+    for (var i = 0; i < this.sections.length; ++i) {
+      var sect = this.sections[i];
+      if (!sect) continue;
+      h = (sect.frametimesInsideMainLoop[x] + sect.frametimesOutsideMainLoop[x]) * scale;
+      y -= h;
+      this.drawContext.fillStyle = sect.drawColor;
+      this.drawContext.fillRect(x, y, 1, h);
+    }
+    h = this.timeSpentOutsideMainloop[x] * scale;
+    y -= h;
+    var fps60Limit = this.canvas.height - (16.666666666 + 1.0) * this.canvas.height / this.verticalTimeScale; // Be very lax, allow 1msec extra jitter.
+    var fps30Limit = this.canvas.height - (33.333333333 + 1.0) * this.canvas.height / this.verticalTimeScale; // Be very lax, allow 1msec extra jitter.
+    if (y < fps30Limit) this.drawContext.fillStyle = this.colorWorseThan30FPS;
+    else if (y < fps60Limit) this.drawContext.fillStyle = this.colorWorseThan60FPS;
+    else this.drawContext.fillStyle = this.color60FPS;
+    this.drawContext.fillRect(x, y, 1, h);
+  },
+
+  // Main UI update/redraw entry point. Drawing occurs incrementally to touch as few pixels as possible and to cause the least impact to the overall performance
+  // while profiling.
+  updateUi: function updateUi(startX, endX) {  
+    // Poll whether user as changed the browser window, and if so, resize the profiler window and redraw it.
+    if (this.canvas.width != document.documentElement.clientWidth - 32) {
+      this.canvas.width = document.documentElement.clientWidth - 32;
+      if (this.timeSpentInMainloop.length > this.canvas.width) this.timeSpentInMainloop.length = this.canvas.width;
+      if (this.timeSpentOutsideMainloop.length > this.canvas.width) this.timeSpentOutsideMainloop.length = this.canvas.width;
+      if (this.lastUiUpdateEndX >= this.canvas.width) this.lastUiUpdateEndX = 0;
+      if (this.currentHistogramX >= this.canvas.width) this.currentHistogramX = 0;
+      for (var i in this.sections) {
+        var sect = this.sections[i];
+        if (!sect) continue;
+        if (sect.frametimesInsideMainLoop.length > this.canvas.width) sect.frametimesInsideMainLoop.length = this.canvas.width;
+        if (sect.frametimesOutsideMainLoop.length > this.canvas.width) sect.frametimesOutsideMainLoop.length = this.canvas.width;
+      }
+      document.getElementById('ntotalframes').innerHTML = this.canvas.width + '';
+      this.clearUi(0, this.canvas.width);
+      this.drawGraphLabels();
+      startX = 0; // Full redraw all columns.
+    }
+
+    // Also poll to autodetect if there is an Emscripten GL canvas available that we could hook into. This is a bit clumsy, but there's no good location to get an event after GL context has been created, so
+    // need to resort to polling.
+    if (location.search.includes('webglprofiler') && !this.automaticallyHookedWebGLProfiler) {
+      this.hookWebGL();
+      if (location.search.includes('tracegl')) {
+        var res = location.search.match(/tracegl=(\d+)/);
+        var traceGl = res[1];
+        document.getElementById('trace_limit').value = traceGl;
+        this.enableTraceWebGL();
+      }
+      if (this.hookedWebGLContexts.length > 0) this.automaticallyHookedWebGLProfiler = true;
+    }
+
+    var clearDistance = this.uiUpdateInterval * 2 + 1;
+    var clearStart = endX + clearDistance;
+    var clearEnd = clearStart + this.uiUpdateInterval;
+    if (endX < startX) {
+      this.clearUi(clearStart, clearEnd);
+      this.clearUi(0, endX + clearDistance+this.uiUpdateInterval);
+      this.drawGraphLabels();
+    } else {
+      this.clearUi(clearStart, clearEnd);
+    }
+
+    if (endX < startX) {
+      for (var x = startX; x < this.canvas.width; ++x) this.drawBar(x);
+      startX = 0;
+    }
+    for (var x = startX; x < endX; ++x) this.drawBar(x);
+  },
+
+  // Work around Microsoft Edge bug where webGLContext.function.length always returns 0.
+  webGLFunctionLength: function(f) {
+    var l0 = ['getContextAttributes','isContextLost','getSupportedExtensions','createBuffer','createFramebuffer','createProgram','createRenderbuffer','createTexture','finish','flush','getError', 'createVertexArray', 'createQuery', 'createSampler', 'createTransformFeedback', 'endTransformFeedback', 'pauseTransformFeedback', 'resumeTransformFeedback'];
+    var l1 = ['getExtension','activeTexture','blendEquation','checkFramebufferStatus','clear','clearDepth','clearStencil','compileShader','createShader','cullFace','deleteBuffer','deleteFramebuffer','deleteProgram','deleteRenderbuffer','deleteShader','deleteTexture','depthFunc','depthMask','disable','disableVertexAttribArray','enable','enableVertexAttribArray','frontFace','generateMipmap','getAttachedShaders','getParameter','getProgramInfoLog','getShaderInfoLog','getShaderSource','isBuffer','isEnabled','isFramebuffer','isProgram','isRenderbuffer','isShader','isTexture','lineWidth','linkProgram','stencilMask','useProgram','validateProgram', 'deleteQuery', 'isQuery', 'deleteVertexArray', 'bindVertexArray', 'isVertexArray', 'drawBuffers', 'readBuffer', 'endQuery', 'deleteSampler', 'isSampler', 'isSync', 'deleteSync', 'deleteTransformFeedback', 'isTransformFeedback', 'beginTransformFeedback'];
+    var l2 = ['attachShader','bindBuffer','bindFramebuffer','bindRenderbuffer','bindTexture','blendEquationSeparate','blendFunc','depthRange','detachShader','getActiveAttrib','getActiveUniform','getAttribLocation','getBufferParameter','getProgramParameter','getRenderbufferParameter','getShaderParameter','getShaderPrecisionFormat','getTexParameter','getUniform','getUniformLocation','getVertexAttrib','getVertexAttribOffset','hint','pixelStorei','polygonOffset','sampleCoverage','shaderSource','stencilMaskSeparate','uniform1f','uniform1fv','uniform1i','uniform1iv','uniform2fv','uniform2iv','uniform3fv','uniform3iv','uniform4fv','uniform4iv','vertexAttrib1f','vertexAttrib1fv','vertexAttrib2fv','vertexAttrib3fv','vertexAttrib4fv', 'vertexAttribDivisor', 'beginQuery', 'invalidateFramebuffer', 'getFragDataLocation', 'uniform1ui', 'uniform1uiv', 'uniform2uiv', 'uniform3uiv', 'uniform4uiv', 'vertexAttribI4iv', 'vertexAttribI4uiv', 'getQuery', 'getQueryParameter', 'bindSampler', 'getSamplerParameter', 'fenceSync', 'getSyncParameter', 'bindTransformFeedback', 'getTransformFeedbackVarying', 'getIndexedParameter', 'getUniformIndices', 'getUniformBlockIndex', 'getActiveUniformBlockName'];
+    var l3 = ['bindAttribLocation','bufferData','bufferSubData','drawArrays','getFramebufferAttachmentParameter','stencilFunc','stencilOp','texParameterf','texParameteri','uniform2f','uniform2i','uniformMatrix2fv','uniformMatrix3fv','uniformMatrix4fv','vertexAttrib2f', 'getBufferSubData', 'getInternalformatParameter', 'uniform2ui', 'uniformMatrix2x3fv', 'uniformMatrix3x2fv', 'uniformMatrix2x4fv', 'uniformMatrix4x2fv', 'uniformMatrix3x4fv', 'uniformMatrix4x3fv', 'clearBufferiv', 'clearBufferuiv', 'clearBufferfv', 'samplerParameteri', 'samplerParameterf', 'clientWaitSync', 'waitSync', 'transformFeedbackVaryings', 'bindBufferBase', 'getActiveUniforms', 'getActiveUniformBlockParameter', 'uniformBlockBinding'];
+    var l4 = ['blendColor','blendFuncSeparate','clearColor','colorMask','drawElements','framebufferRenderbuffer','renderbufferStorage','scissor','stencilFuncSeparate','stencilOpSeparate','uniform3f','uniform3i','vertexAttrib3f','viewport', 'drawArraysInstanced', 'uniform3ui', 'clearBufferfi'];
+    var l5 = ['framebufferTexture2D','uniform4f','uniform4i','vertexAttrib4f', 'drawElementsInstanced', 'copyBufferSubData', 'framebufferTextureLayer', 'renderbufferStorageMultisample', 'texStorage2D', 'uniform4ui', 'vertexAttribI4i', 'vertexAttribI4ui', 'vertexAttribIPointer', 'bindBufferRange'];
+    var l6 = ['texImage2D', 'vertexAttribPointer', 'invalidateSubFramebuffer', 'texStorage3D', 'drawRangeElements'];
+    var l7 = ['compressedTexImage2D', 'readPixels', 'texSubImage2D'];
+    var l8 = ['compressedTexSubImage2D', 'copyTexImage2D', 'copyTexSubImage2D', 'compressedTexImage3D'];
+    var l9 = ['copyTexSubImage3D'];
+    var l10 = ['blitFramebuffer', 'texImage3D', 'compressedTexSubImage3D'];
+    var l11 = ['texSubImage3D'];
+    if (l0.includes(f)) return 0;
+    if (l1.includes(f)) return 1;
+    if (l2.includes(f)) return 2;
+    if (l3.includes(f)) return 3;
+    if (l4.includes(f)) return 4;
+    if (l5.includes(f)) return 5;
+    if (l6.includes(f)) return 6;
+    if (l7.includes(f)) return 7;
+    if (l8.includes(f)) return 8;
+    if (l9.includes(f)) return 9;
+    if (l10.includes(f)) return 10;
+    if (l11.includes(f)) return 11;
+    console.warn('Unexpected WebGL function ' + f);
+  },
+
+  detectWebGLContext: function() {
+    if (Module['canvas'] && Module['canvas'].GLctxObject && Module['canvas'].GLctxObject.GLctx) return Module['canvas'].GLctxObject.GLctx;
+    else if (typeof GLctx !== 'undefined') return GLctx;
+    else if (Module.ctx) return Module.ctx;
+    return null;
+  },
+
+  toggleHookWebGL: function(glCtx) {
+    if (!glCtx) glCtx = this.detectWebGLContext();
+    if (this.hookedWebGLContexts.includes(glCtx)) this.unhookWebGL(glCtx);
+    else this.hookWebGL(glCtx);
+  },
+
+  enableTraceWebGL: function() {
+    document.getElementById("toggle_webgl_trace").style.background = '#00FF00';
+    this.logWebGLCallsSlowerThan = parseInt(document.getElementById('trace_limit').value, undefined /* https://github.com/google/closure-compiler/issues/3230 / https://github.com/google/closure-compiler/issues/3548 */);
+  },
+
+  disableTraceWebGL: function() {
+    document.getElementById("toggle_webgl_trace").style.background = '#E1E1E1';
+    this.logWebGLCallsSlowerThan = Infinity;
+  },
+
+  toggleTraceWebGL: function() {
+    if (this.logWebGLCallsSlowerThan == Infinity) {
+      this.enableTraceWebGL();
+    } else {
+      this.disableTraceWebGL();
+    }
+  },
+
+  unhookWebGL: function(glCtx) {
+    if (!glCtx) glCtx = this.detectWebGLContext();
+    if (!glCtx.cpuprofilerAlreadyHooked) return;
+    glCtx.cpuprofilerAlreadyHooked = false;
+    this.hookedWebGLContexts.splice(this.hookedWebGLContexts.indexOf(glCtx), 1);
+    document.getElementById("toggle_webgl_profile").style.background = '#E1E1E1';
+
+    for (var f in glCtx) {
+      if (typeof glCtx[f] !== 'function' || f.startsWith('real_')) continue;
+      var realf = 'real_' + f;
+      glCtx[f] = glCtx[realf];
+      delete glCtx[realf];
+    }
+  },
+
+  hookWebGLFunction: function(f, glCtx) {
+    var this_ = this;
+    var section = (this_.hotGLFunctions.incudes(f) || f.startsWith('uniform') || f.startsWith('vertexAttrib')) ? 0 : 1;
+    var realf = 'real_' + f;
+    glCtx[realf] = glCtx[f];
+    var numArgs = this_.webGLFunctionLength(f); // On Firefox & Chrome, could do "glCtx[realf].length", but that doesn't work on Edge, which always reports 0.
+    // Accessing 'arguments' is super slow, so to avoid overhead, statically reason the number of arguments.
+    switch (numArgs) {
+      case 0: glCtx[f] = function webgl_0() { this_.enterSection(section); var ret = glCtx[realf](); this_.endSection(section); return ret; }; break;
+      case 1: glCtx[f] = function webgl_1(a1) { this_.enterSection(section); var ret =  glCtx[realf](a1); this_.endSection(section); return ret; }; break;
+      case 2: glCtx[f] = function webgl_2(a1, a2) { this_.enterSection(section); var ret =  glCtx[realf](a1, a2); this_.endSection(section); return ret; }; break;
+      case 3: glCtx[f] = function webgl_3(a1, a2, a3) { this_.enterSection(section); var ret =  glCtx[realf](a1, a2, a3); this_.endSection(section); return ret; }; break;
+      case 4: glCtx[f] = function webgl_4(a1, a2, a3, a4) { this_.enterSection(section); var ret =  glCtx[realf](a1, a2, a3, a4); this_.endSection(section); return ret; }; break;
+      case 5: glCtx[f] = function webgl_5(a1, a2, a3, a4, a5) { this_.enterSection(section); var ret =  glCtx[realf](a1, a2, a3, a4, a5); this_.endSection(section); return ret; }; break;
+      case 6: glCtx[f] = function webgl_6(a1, a2, a3, a4, a5, a6) { this_.enterSection(section); var ret =  glCtx[realf](a1, a2, a3, a4, a5, a6); this_.endSection(section); return ret; }; break;
+      case 7: glCtx[f] = function webgl_7(a1, a2, a3, a4, a5, a6, a7) { this_.enterSection(section); var ret =  glCtx[realf](a1, a2, a3, a4, a5, a6, a7); this_.endSection(section); return ret; }; break;
+      case 8: glCtx[f] = function webgl_8(a1, a2, a3, a4, a5, a6, a7, a8) { this_.enterSection(section); var ret =  glCtx[realf](a1, a2, a3, a4, a5, a6, a7, a8); this_.endSection(section); return ret; }; break;
+      case 9: glCtx[f] = function webgl_9(a1, a2, a3, a4, a5, a6, a7, a8, a9) { this_.enterSection(section); var ret =  glCtx[realf](a1, a2, a3, a4, a5, a6, a7, a8, a9); this_.endSection(section); return ret; }; break;
+      case 10: glCtx[f] = function webgl_10(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) { this_.enterSection(section); var ret =  glCtx[realf](a1, a2, a3, a4, a5, a6, a7, a8, a9, a10); this_.endSection(section); return ret; }; break;
+      case 11: glCtx[f] = function webgl_11(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11) { this_.enterSection(section); var ret =  glCtx[realf](a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11); this_.endSection(section); return ret; }; break;
+      default: throw 'hookWebGL failed! Unexpected length ' + glCtx[realf].length;
+    }
+  },
+
+  hookWebGL: function(glCtx) {
+    if (!glCtx) glCtx = this.detectWebGLContext();
+    if (!glCtx) return;
+    if (!((typeof WebGLRenderingContext !== 'undefined' && glCtx instanceof WebGLRenderingContext)
+     || (typeof WebGL2RenderingContext !== 'undefined' && glCtx instanceof WebGL2RenderingContext))) {
+      document.getElementById("toggle_webgl_profile").disabled = true;
+      return;
+    }
+
+    if (glCtx.cpuprofilerAlreadyHooked) return;
+    glCtx.cpuprofilerAlreadyHooked = true;
+    this.hookedWebGLContexts.push(glCtx);
+    document.getElementById("toggle_webgl_profile").style.background = '#00FF00';
+
+    // Hot GL functions are ones that you'd expect to find during render loops (render calls, dynamic resource uploads), cold GL functions are load time functions (shader compilation, texture/mesh creation)
+    // Distinguishing between these two allows pinpointing locations of troublesome GL usage that might cause performance issues.
+    this.createSection(0, 'Hot GL', this.colorHotGLFunction, /*traceable=*/true);
+    this.createSection(1, 'Cold GL', this.colorColdGLFunction, /*traceable=*/true);
+    for (var f in glCtx) {
+      if (typeof glCtx[f] !== 'function' || f.startsWith('real_')) continue;
+      this.hookWebGLFunction(f, glCtx);
+    }
+    var this_ = this;
+    // The above injection won't work for texImage2D and texSubImage2D, which have multiple overloads.
+    glCtx['texImage2D'] = function(a1, a2, a3, a4, a5, a6, a7, a8, a9) { 
+      this_.enterSection(1);
+      var ret = (a7 !== undefined) ? glCtx['real_texImage2D'](a1, a2, a3, a4, a5, a6, a7, a8, a9) : glCtx['real_texImage2D'](a1, a2, a3, a4, a5, a6);
+      this_.endSection(1);
+      return ret;
+    };
+    glCtx['texSubImage2D'] = function(a1, a2, a3, a4, a5, a6, a7, a8, a9) { 
+      this_.enterSection(0);
+      var ret = (a8 !== undefined) ? glCtx['real_texSubImage2D'](a1, a2, a3, a4, a5, a6, a7, a8, a9) : glCtx['real_texSubImage2D'](a1, a2, a3, a4, a5, a6, a7);
+      this_.endSection(0);
+      return ret;
+    };
+    glCtx['texSubImage3D'] = function(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11) { 
+      this_.enterSection(0);
+      var ret = (a9 !== undefined) ? glCtx['real_texSubImage3D'](a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11) : glCtx['real_texSubImage2D'](a1, a2, a3, a4, a5, a6, a7, a8);
+      this_.endSection(0);
+      return ret;
+    };
+  }
+};
+
+// Hook into setInterval to be able to capture the time spent executing them.
+emscriptenCpuProfiler.createSection(2, 'setInterval', emscriptenCpuProfiler.colorSetIntervalSection, /*traceable=*/true);
+var realSetInterval = setInterval;
+setInterval = function(fn, delay) {
+  function wrappedSetInterval() {
+    emscriptenCpuProfiler.enterSection(2);
+    fn();
+    emscriptenCpuProfiler.endSection(2);
+  };
+  return realSetInterval(wrappedSetInterval, delay);
+}
+
+// Hook into setTimeout to be able to capture the time spent executing them.
+emscriptenCpuProfiler.createSection(3, 'setTimeout', emscriptenCpuProfiler.colorSetTimeoutSection, /*traceable=*/true);
+var realSetTimeout = setTimeout;
+setTimeout = function(fn, delay) {
+  function wrappedSetTimeout() {
+    emscriptenCpuProfiler.enterSection(3);
+    fn();
+    emscriptenCpuProfiler.endSection(3);
+  };
+  return realSetTimeout(wrappedSetTimeout, delay);
+}
+
+// Backwards compatibility with previously compiled code. Don't call this anymore!
+function cpuprofiler_add_hooks() { emscriptenCpuProfiler.initialize(); }
+
+if (typeof Module !== 'undefined' && typeof document !== 'undefined') emscriptenCpuProfiler.initialize();
+
+
+
+var emscriptenThreadProfiler = {
+  // UI update interval in milliseconds.
+  uiUpdateIntervalMsecs: 1000,
+
+  // UI div element.
+  threadProfilerDiv: null,
+
+  // Installs startup hook and periodic UI update timer.
+  initialize: function initialize() {
+    this.threadProfilerDiv = document.getElementById('threadprofiler');
+    if (!this.threadProfilerDiv) {
+      var div = document.createElement("div");
+      div.innerHTML = "<div id='threadprofiler' style='margin: 20px; border: solid 1px black;'></div>";
+      document.body.appendChild(div);
+      this.threadProfilerDiv = document.getElementById('threadprofiler');
+    }
+    setInterval(function() { emscriptenThreadProfiler.updateUi() }, this.uiUpdateIntervalMsecs);
+  },
+
+  updateUi: function updateUi() {
+    if (typeof PThread === 'undefined') {
+      // Likely running threadprofiler on a singlethreaded build, or not
+      // initialized yet, ignore updating.
+      return;
+    }
+    var str = '';
+    var mainThread = _emscripten_main_browser_thread_id();
+
+    var threads = [mainThread];
+    for (var i in PThread.pthreads) {
+      threads.push(PThread.pthreads[i].threadInfoStruct);
+    }
+
+    for (var i = 0; i < threads.length; ++i) {
+      var threadPtr = threads[i];
+      var profilerBlock = Atomics.load(HEAPU32, (threadPtr + 8 /* {{{ C_STRUCTS.pthread.profilerBlock }}}*/) >> 2);
+      var threadName = PThread.getThreadName(threadPtr);
+      if (threadName) {
+        threadName = '"' + threadName + '" (0x' + threadPtr.toString(16) + ')';
+      } else {
+        threadName = '(0x' + threadPtr.toString(16) + ')';
+      }
+
+      str += 'Thread ' + threadName + ' now: ' + PThread.threadStatusAsString(threadPtr) + '. ';
+
+      var threadTimesInStatus = [];
+      var totalTime = 0;
+      for (var j = 0; j < 7/*EM_THREAD_STATUS_NUMFIELDS*/; ++j) {
+        threadTimesInStatus.push(HEAPF64[((profilerBlock + 16/*C_STRUCTS.thread_profiler_block.timeSpentInStatus*/) >> 3) + j]);
+        totalTime += threadTimesInStatus[j];
+        HEAPF64[((profilerBlock + 16/*C_STRUCTS.thread_profiler_block.timeSpentInStatus*/) >> 3) + j] = 0;
+      }
+      var recent = '';
+      if (threadTimesInStatus[1] > 0) recent += (threadTimesInStatus[1] / totalTime * 100.0).toFixed(1) + '% running. ';
+      if (threadTimesInStatus[2] > 0) recent += (threadTimesInStatus[2] / totalTime * 100.0).toFixed(1) + '% sleeping. ';
+      if (threadTimesInStatus[3] > 0) recent += (threadTimesInStatus[3] / totalTime * 100.0).toFixed(1) + '% waiting for futex. ';
+      if (threadTimesInStatus[4] > 0) recent += (threadTimesInStatus[4] / totalTime * 100.0).toFixed(1) + '% waiting for mutex. ';
+      if (threadTimesInStatus[5] > 0) recent += (threadTimesInStatus[5] / totalTime * 100.0).toFixed(1) + '% waiting for proxied ops. ';
+      if (recent.length > 0) str += 'Recent activity: ' + recent;
+      str += '<br />';
+    }
+    this.threadProfilerDiv.innerHTML = str;
+  }
+};
+
+if (typeof Module !== 'undefined' && typeof document !== 'undefined') emscriptenThreadProfiler.initialize();
