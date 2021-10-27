@@ -12,7 +12,7 @@
 <body>
   <div id="container" style="height: 100vh"></div>
   <script>
-    let num = 40
+    let num = 30
     const jsData = []
     const wasmData = []
     const indexData = []
@@ -34,8 +34,7 @@
       .then(mod => WebAssembly.instantiate(mod))
       .then(instance => {
         const exports = instance.exports
-        const times = 100
-
+        const times = 1
         for (let index = 2; index < num; index++) {
           indexData.push(index)
 
@@ -46,20 +45,22 @@
           console.timeEnd(`js测试速度${index}`)
           const jsEnd = performance.now() * times
 
-
           // wasm
           console.time(`wasm测试速度${index}`)
           const wasmResult = exports.fib(index)
           console.timeEnd(`wasm测试速度${index}`)
           const wasmEnd = performance.now() * times
 
+          console.log("start:", start)
+          console.log("jsEnd:", jsEnd)
+          console.log("wasmEnd:", wasmEnd)
 
           const jsTime = jsEnd - start
           const wasmTime = wasmEnd - jsEnd
           jsData.push(jsTime)
           wasmData.push(wasmTime)
           timesData.push(Number((jsTime / wasmTime).toFixed(1)))
-          console.log(`js耗时 ${jsTime} wasm 耗时 ${wasmTime}`)
+          console.log(`js耗时:${jsTime / times}ms  wasm耗时: ${wasmTime / times}ms`)
 
           if (wasmTime > jsTime) {
             console.log(`%c js更快 index 为 ${index}`, 'color: white; background: red; font-size: 30px')

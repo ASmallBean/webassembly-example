@@ -206,7 +206,6 @@ __ATPOSTRUN__.push(function () {
       // start drawing!
       draw(context);
     }
-    console.log("stop")
   }
 
   // init canvas;
