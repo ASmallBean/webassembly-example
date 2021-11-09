@@ -1,56 +1,57 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <title>我的第一个WASM应用</title>
 </head>
 
 <body>
-<p><span>排序前:</span><span class="sequence-before"></span></p>
-<p><span>排序后:</span><span class="sequence-after"></span></p>
-<script src="./index.js"></script>
-<script>
-//该方法用于从js环境向指定的共享堆内存段填充数据
-function importArrayToBuffer(memory,array,offset) {
-    const importBuffer = new Uint32Array(memory.buffer,offset,array.length);
-    for(let i=0;i<array.length;i++){
-        importBuffer[i] = array[i];
-    }
-}
-//从远程加载一个WASM的模块，并将该模块中的内容转换成二进制数据
-let startTime = performance.now();
-fetch("./index.wasm").then(response => response.arrayBuffer()).then((bytes) =>{
-    let memory;
-    //通过浏览器提供的标准WebAssembly接口来编译和初始化一个Wasm模块
-    WebAssembly.compile(bytes).then(module => WebAssembly.instantiate(module,{
-        env:{
-            print (offset,len){
-                let strBuffer = new Uint32Array(memory.buffer,offset,len);
-                document.querySelector('.sequence-after').innerText=JSON.stringify(Object.values(strBuffer));
+    <p><span>排序前:</span><span class="sequence-before"></span></p>
+    <p><span>排序后:</span><span class="sequence-after"></span></p>
+    <script src="./index.js"></script>
+    <script>
+        //该方法用于从js环境向指定的共享堆内存段填充数据
+        function importArrayToBuffer(memory, array, offset) {
+            const importBuffer = new Uint32Array(memory.buffer, offset, array.length);
+            for (let i = 0; i < array.length; i++) {
+                importBuffer[i] = array[i];
             }
         }
-    })).then(instance =>{
-        //输出下载，编译及实例化模块花费的时间
-        console.log(performance.now()-startTime);
-        //取出从Wasm模块中导出的函数
-        let exports = instance.exports;
-        //wasm实例所有信息
-        console.log("实例的所有信息");
-        console.log(exports);
-        //获取该Wasm模块实例使用的堆内存对象
-        memory=exports.memory;
-        let arr =[];
-        for(let i=0;i<10;i++){
-            arr.push(Math.round(Math.random()*10));
-        }
-        document.querySelector('.sequence-before').innerText=JSON.stringify(arr);
-        //将整型数组内的元素依次填充到指定的内存段，即填充到Wasm模块初始化时生成的数组中
-        importArrayToBuffer(memory,arr,exports.getArrayOffset());
-        //调用Wasm模块暴露的排序函数
-        exports.sort();
-    });
-});
-</script>
+        //从远程加载一个WASM的模块，并将该模块中的内容转换成二进制数据
+        let startTime = performance.now();
+        fetch("./index.wasm").then(response => response.arrayBuffer()).then((bytes) => {
+            let memory;
+            //通过浏览器提供的标准WebAssembly接口来编译和初始化一个Wasm模块
+            WebAssembly.compile(bytes).then(module => WebAssembly.instantiate(module, {
+                env: {
+                    print(offset, len) {
+                        let strBuffer = new Uint32Array(memory.buffer, offset, len);
+                        document.querySelector('.sequence-after').innerText = JSON.stringify(Object.values(strBuffer));
+                    }
+                }
+            })).then(instance => {
+                //输出下载，编译及实例化模块花费的时间
+                console.log(performance.now() - startTime);
+                //取出从Wasm模块中导出的函数
+                let exports = instance.exports;
+                //wasm实例所有信息
+                console.log("实例的所有信息");
+                console.log(exports);
+                //获取该Wasm模块实例使用的堆内存对象
+                memory = exports.memory;
+                let arr = [];
+                for (let i = 0; i < 10; i++) {
+                    arr.push(Math.round(Math.random() * 10));
+                }
+                document.querySelector('.sequence-before').innerText = JSON.stringify(arr);
+                //将整型数组内的元素依次填充到指定的内存段，即填充到Wasm模块初始化时生成的数组中
+                importArrayToBuffer(memory, arr, exports.getArrayOffset());
+                //调用Wasm模块暴露的排序函数
+                exports.sort();
+            });
+        });
+    </script>
 </body>
-</html>
 
+</html>

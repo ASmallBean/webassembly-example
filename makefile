@@ -5,6 +5,8 @@ DIP_DIR=src/dip
 FIB_DIR=src/fib
 GO_DIR=src/go
 WASI_APP_DIR=src/wasi-app
+CAPI_DIR=src/capi
+MEM_DIR=src/mem
 WASI_SDK=/root/wasi-sdk-12.0
 
 
@@ -69,9 +71,6 @@ build.sort.html:
 	@emcc ${SORT_DIR}/main.cpp --std=c++11 -s WASM=1 -o ${SORT_DIR}/html/index.html --post-js ${SORT_DIR}/post-script.js --pre-js ${SORT_DIR}/pre-script.js -s EXPORTED_RUNTIME_METHODS="['cwrap','getValue']"
 
 
-
-
-
 # wasi
 .PHONY: build.wasi.g++
 build.wasi.g++:
@@ -86,3 +85,14 @@ build.wasi.clang:
 .PHONY: build.wasi.wasm
  build.wasi.wasm:
 	@${WASI_SDK}/bin/clang --target=wasm32-wasi --sysroot=${WASI_SDK}/share/wasi-sysroot src/wasi-app/main.cpp -o wasmtime-app.wasm
+
+
+# capi
+.PHONY: build.capi.g++
+build.capi.g++:
+	@emcc ${CAPI_DIR}/capi_js.cc --js-library pkg.js -o ${CAPI_DIR}/capi_js.js
+
+
+.PHONY: build.mem.js
+build.mem.js:
+	@emcc ${MEM_DIR}/mem.cpp --std=c++11 -s WASM=1 -o ${MEM_DIR}/index.js --post-js ${MEM_DIR}/post-script.js

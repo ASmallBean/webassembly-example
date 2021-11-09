@@ -1,49 +1,51 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <title>我的第一个WASM应用</title>
 </head>
 
 <body>
-<p><span>排序前:</span><span class="sequence-before"></span></p>
-<p><span>排序后:</span><span class="sequence-after"></span></p>
-<script>
-function importArrayToBuffer(memory,array,offset) {
-    const importBuffer = new Uint32Array(memory.buffer,offset,array.length);
-    for(let i=0;i<array.length;i++){
-        importBuffer[i] = array[i];
-    }
-}
-let startTime = performance.now();
-WebAssembly.instantiateStreaming(fetch("/cctest/original.wasm"),{
-    env:{
-         print (offset,len){
-           let strBuffer = new Uint32Array(memory.buffer,offset,len);
-           console.log(strBuffer);
-           document.querySelector('.sequence-after').innerText=JSON.stringify(Object.values(strBuffer));
-         }
-    }
-}).then(resultObject =>{
-    console.log(performance.now()-startTime);
-    //WebAssembly.Module
-    console.log(resultObject.module);
-    //WebAssembly.Instance
-    console.log(resultObject.instance);
-    //总和
-    console.log(resultObject);
-    let exports = resultObject.instance.exports;
-    memory=exports.memory;
-        let arr =[];
-        for(let i=0;i<10;i++){
-            arr.push(Math.round(Math.random()*10));
+    <p><span>排序前:</span><span class="sequence-before"></span></p>
+    <p><span>排序后:</span><span class="sequence-after"></span></p>
+    <script>
+        function importArrayToBuffer(memory, array, offset) {
+            const importBuffer = new Uint32Array(memory.buffer, offset, array.length);
+            for (let i = 0; i < array.length; i++) {
+                importBuffer[i] = array[i];
+            }
         }
-        document.querySelector('.sequence-before').innerText=JSON.stringify(arr);
-        importArrayToBuffer(memory,arr,exports.getArrayOffset());
-        exports.sort();
-});
-</script>
+        let startTime = performance.now();
+        WebAssembly.instantiateStreaming(fetch("/cctest/original.wasm"), {
+            env: {
+                print(offset, len) {
+                    let strBuffer = new Uint32Array(memory.buffer, offset, len);
+                    console.log(strBuffer);
+                    document.querySelector('.sequence-after').innerText = JSON.stringify(Object.values(strBuffer));
+                }
+            }
+        }).then(resultObject => {
+            console.log(performance.now() - startTime);
+            //WebAssembly.Module
+            console.log(resultObject.module);
+            //WebAssembly.Instance
+            console.log(resultObject.instance);
+            //总和
+            console.log(resultObject);
+            let exports = resultObject.instance.exports;
+            memory = exports.memory;
+            let arr = [];
+            for (let i = 0; i < 10; i++) {
+                arr.push(Math.round(Math.random() * 10));
+            }
+            document.querySelector('.sequence-before').innerText = JSON.stringify(arr);
+            importArrayToBuffer(memory, arr, exports.getArrayOffset());
+            exports.sort();
+        });
+    </script>
 </body>
+
 </html>
 
 <!--
