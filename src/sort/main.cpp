@@ -40,7 +40,7 @@ char partition(char arr[], char low, char high)
 
 extern "C"
 {
-    char *EMSCRIPTEN_KEEPALIVE quickSort(char arr[], char low, char high)
+    EMSCRIPTEN_KEEPALIVE char *quickSort(char arr[], char low, char high)
     {
         if (low < high)
         {
@@ -52,13 +52,53 @@ extern "C"
         return arr;
     }
 
-    double EMSCRIPTEN_KEEPALIVE doubleSqrt(double x)
+    EMSCRIPTEN_KEEPALIVE double doubleSqrt(double x)
     {
         return sqrt(x);
+    }
+
+    EMSCRIPTEN_KEEPALIVE string doubleStr(string x)
+    {
+        return x + x;
+    }
+
+    //参数为C-style字符串
+    EMSCRIPTEN_KEEPALIVE unsigned char *capitalize(unsigned char *string)
+    {
+        int i = 0;
+        while (1)
+        {
+            //获取每个位置字符的ASCII编码值
+            char _current_pos = *(string + i);
+            //转换为大写形式
+            if (_current_pos >= 0x61 && _current_pos <= 0x7a)
+            {
+                *(string + i) = _current_pos - 32;
+            }
+            //如果处理到字符串结尾，则退出循环
+            if (_current_pos == '\0')
+            {
+                break;
+            }
+            i++;
+        }
+        return string;
+    }
+
+    // 将数组所有元素值增加1
+    EMSCRIPTEN_KEEPALIVE char *increment(char array[], int length)
+    {
+        for (int i = 0; i < length; i++)
+        {
+            std::cout << array[i] << std::endl;
+            array[i] = 1;
+        }
+        return array;
     }
 }
 
 int main()
 {
     std::cout << "Hello World!" << std::endl;
+    std::cout << doubleStr("abc") << std::endl;
 }

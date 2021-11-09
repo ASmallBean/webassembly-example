@@ -64,11 +64,11 @@ build.dip.dist:
 # sort
 .PHONY: build.sort.js
 build.sort.js:
-	@emcc ${SORT_DIR}/main.cpp --std=c++11 -s WASM=1 -o ${SORT_DIR}/js/index.js --post-js ${SORT_DIR}/post-script.js --pre-js ${SORT_DIR}/pre-script.js -s EXPORTED_RUNTIME_METHODS="['cwrap','getValue']"
+	@emcc ${SORT_DIR}/main.cpp --std=c++11 -s WASM=1 -o ${SORT_DIR}/js/index.js --post-js ${SORT_DIR}/post-script.js --pre-js ${SORT_DIR}/pre-script.js -s EXPORTED_RUNTIME_METHODS="['cwrap','ccall','getValue']"
 
 .PHONY: build.sort.html
 build.sort.html:
-	@emcc ${SORT_DIR}/main.cpp --std=c++11 -s WASM=1 -o ${SORT_DIR}/html/index.html --post-js ${SORT_DIR}/post-script.js --pre-js ${SORT_DIR}/pre-script.js -s EXPORTED_RUNTIME_METHODS="['cwrap','getValue']"
+	@emcc ${SORT_DIR}/main.cpp --std=c++11 -s WASM=1 -o ${SORT_DIR}/html/index.html --post-js ${SORT_DIR}/post-script.js --pre-js ${SORT_DIR}/pre-script.js -s EXPORTED_RUNTIME_METHODS="['cwrap','ccall','getValue']"
 
 
 # wasi
