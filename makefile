@@ -68,7 +68,7 @@ build.dip.dist:
 # sort
 .PHONY: build.sort.js
 build.sort.js:
-	@emcc ${SORT_DIR}/main.cpp --std=c++11 -s WASM=1 -o ${SORT_DIR}/js/index.js --post-js ${SORT_DIR}/post-script.js --pre-js ${SORT_DIR}/pre-script.js -s EXPORTED_RUNTIME_METHODS="['cwrap','ccall','getValue']"
+	@EMCC_DEBUG=1 emcc ${SORT_DIR}/main.cpp -g4 --std=c++11 -s WASM=1 -o ${SORT_DIR}/js/index.js --post-js ${SORT_DIR}/post-script.js --pre-js ${SORT_DIR}/pre-script.js -s EXPORTED_RUNTIME_METHODS="['cwrap','ccall','getValue']"
 
 .PHONY: build.sort.html
 build.sort.html:
