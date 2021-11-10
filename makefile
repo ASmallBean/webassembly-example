@@ -19,6 +19,10 @@ build.add.js:
 build.add.wasm:
 	@emcc ${ADD_DIR}/main.cpp -o ${ADD_DIR}/index.js
 
+.PHONY: build.add.asm.js
+build.add.asm.js:
+	@emcc -s ASM_JS=1 ${ADD_DIR}/main.cpp -o ${ADD_DIR}/index.js
+
 
 # fib
 .PHONY: build.fib.clang

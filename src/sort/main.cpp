@@ -57,9 +57,28 @@ extern "C"
         return sqrt(x);
     }
 
-    EMSCRIPTEN_KEEPALIVE string doubleStr(string x)
+    EMSCRIPTEN_KEEPALIVE unsigned char *doubleStr(unsigned char *string)
     {
-        return x + x;
+        int i = 0;
+        int count = 0;
+        while (1)
+        {
+            //获取每个位置字符的ASCII编码值
+            char _current_pos = *(string + i);
+
+            //如果处理到字符串结尾，则退出循环
+            if (_current_pos == '\0')
+            {
+                break;
+            }
+            else
+            {
+                *(string + i) = _current_pos - 1;
+            }
+            i++;
+        }
+
+        return string;
     }
 
     //参数为C-style字符串
@@ -90,7 +109,7 @@ extern "C"
     {
         for (int i = 0; i < length; i++)
         {
-            std::cout << array[i] << std::endl;
+            // std::cout << array[i] << std::endl;
             array[i] = 1;
         }
         return array;
@@ -99,6 +118,5 @@ extern "C"
 
 int main()
 {
-    std::cout << "Hello World!" << std::endl;
-    std::cout << doubleStr("abc") << std::endl;
+    std::cout << "C++ Main" << std::endl;
 }
