@@ -28,7 +28,6 @@ __ATPOSTRUN__.push(() => {
   //打印应用的整体时间
   console.log("Application TT:", totalTime, "ms");
 
-
   console.log("-------------------- doubleSqrt ----------------------------------")
   // 兼容
   const resultNum = Module._doubleSqrt(3)

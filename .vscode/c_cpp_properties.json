@@ -4,7 +4,8 @@
             "name": "Mac",
             "includePath": [
                 "${workspaceFolder}/**",
-                "/Users/mr.yang/IDE/emsdk/upstream/emscripten/system/include/**"
+                "/Users/mr.yang/IDE/emsdk/upstream/emscripten/system/include/**",
+                "/Users/mr.yang/IDE/wasi-sdk/share/wasi-sysroot/include/**"
             ],
             "defines": [],
             "macFrameworkPath": [

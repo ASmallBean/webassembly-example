@@ -7,8 +7,8 @@ GO_DIR=src/go
 WASI_APP_DIR=src/wasi-app
 CAPI_DIR=src/capi
 MEM_DIR=src/mem
+# WASI_SDK=~/IDE/wasi-sdk
 WASI_SDK=/root/wasi-sdk-12.0
-
 
 # add
 .PHONY: build.add.js
@@ -83,12 +83,21 @@ build.wasi.g++:
 
 .PHONY: build.wasi.clang
 build.wasi.clang:
-	@clang++  ${WASI_APP_DIR}/main.cpp -o wasi-app
+	@clang++  ${WASI_APP_DIR}/main.cpp -o ${WASI_APP_DIR}/wasi-app
 
 
 .PHONY: build.wasi.wasm
  build.wasi.wasm:
-	@${WASI_SDK}/bin/clang --target=wasm32-wasi --sysroot=${WASI_SDK}/share/wasi-sysroot src/wasi-app/main.cpp -o wasmtime-app.wasm
+	@${WASI_SDK}/bin/clang++ --target=wasm32-wasi --sysroot=${WASI_SDK}/share/wasi-sysroot ${WASI_APP_DIR}/main.cpp -o ${WASI_APP_DIR}/wasm-app.wasm
+
+
+.PHONY: build.wasi.copy.clang
+build.wasi.demo.clang:
+	@clang++  ${WASI_APP_DIR}/copy.cpp -o ${WASI_APP_DIR}/copy-app
+
+.PHONY: build.wasi.copy.wasm
+ build.wasi.demo.wasm:
+	@${WASI_SDK}/bin/clang++ --target=wasm32-wasi --sysroot=${WASI_SDK}/share/wasi-sysroot ${WASI_APP_DIR}/copy.cpp -o ${WASI_APP_DIR}/copy-app.wasm
 
 
 # capi
