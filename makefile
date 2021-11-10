@@ -92,11 +92,11 @@ build.wasi.clang:
 
 
 .PHONY: build.wasi.copy.clang
-build.wasi.demo.clang:
+build.wasi.copy.clang:
 	@clang++  ${WASI_APP_DIR}/copy.cpp -o ${WASI_APP_DIR}/copy-app
 
 .PHONY: build.wasi.copy.wasm
- build.wasi.demo.wasm:
+ build.wasi.copy.wasm:
 	@${WASI_SDK}/bin/clang++ --target=wasm32-wasi --sysroot=${WASI_SDK}/share/wasi-sysroot ${WASI_APP_DIR}/copy.cpp -o ${WASI_APP_DIR}/copy-app.wasm
 
 
