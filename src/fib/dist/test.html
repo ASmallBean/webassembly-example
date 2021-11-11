@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Document</title>
+</head>
+
+<body>
+  <script>
+    let num = 20
+    // 斐波那契法
+    function fib(x) {
+      if (x <= 0) {
+        return 0
+      }
+      if (x <= 2) {
+        return 1
+      }
+      return fib(x - 1) + fib(x - 2)
+    }
+
+    fetch("fib.wasm")
+      .then(response => response.arrayBuffer())
+      .then(bytes => WebAssembly.compile(bytes))
+      .then(mod => WebAssembly.instantiate(mod))
+      .then(instance => {
+        const exports = instance.exports
+        console.log("exports对象:", exports)
+        console.time("wasm测试速度:")
+        const wasmResult = exports.fib(num)
+        console.timeEnd("wasm测试速度:")
+        console.log("wasm fib 运行结果:", wasmResult)
+
+        console.time("js测试速度:")
+        const jsResult = fib(num)
+        console.timeEnd("js测试速度:")
+        console.log("js fib 运行结果:", jsResult)
+      })
+  </script>
+</body>
+
+</html>

@@ -5,12 +5,18 @@
   <meta charset="UTF-8">
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/echarts@5.2.1/dist/echarts.min.js"></script>
   <title>Document</title>
 </head>
 
 <body>
+  <div id="container" style="height: 100vh"></div>
   <script>
-    let num = 20
+    let num = 30
+    const jsData = []
+    const wasmData = []
+    const indexData = []
+    const timesData = []
     // 斐波那契法
     function fib(x) {
       if (x <= 0) {
@@ -28,18 +34,144 @@
       .then(mod => WebAssembly.instantiate(mod))
       .then(instance => {
         const exports = instance.exports
-        console.log("exports对象:", exports)
-        console.time("wasm测试速度:")
-        const wasmResult = exports.fib(num)
-        console.timeEnd("wasm测试速度:")
-        console.log("wasm fib 运行结果:", wasmResult)
+        console.log("🚀 ~ file: chart.html ~ line 37 ~ exports", exports)
+        const times = 1
+        for (let index = 2; index < num; index++) {
+          indexData.push(index)
 
-        console.time("js测试速度:")
-        const jsResult = fib(num)
-        console.timeEnd("js测试速度:")
-        console.log("js fib 运行结果:", jsResult)
+          // js
+          const start = performance.now() * times
+          console.time(`js测试速度${index}`)
+          const jsResult = fib(index)
+          console.timeEnd(`js测试速度${index}`)
+          const jsEnd = performance.now() * times
+
+          // wasm
+          console.time(`wasm测试速度${index}`)
+          const wasmResult = exports.fib(index)
+          console.timeEnd(`wasm测试速度${index}`)
+          const wasmEnd = performance.now() * times
+
+          console.log("start:", start)
+          console.log("jsEnd:", jsEnd)
+          console.log("wasmEnd:", wasmEnd)
+
+          const jsTime = jsEnd - start
+          const wasmTime = wasmEnd - jsEnd
+          jsData.push(jsTime)
+          wasmData.push(wasmTime)
+          timesData.push(Number((jsTime / wasmTime).toFixed(1)))
+          console.log(`js耗时:${jsTime / times}ms  wasm耗时: ${wasmTime / times}ms`)
+
+          if (wasmTime > jsTime) {
+            console.log(`%c js更快 index 为 ${index}`, 'color: white; background: red; font-size: 30px')
+          } else {
+            console.log(`%c wasm更快 index 为 ${index}`, 'color: white; background: green; font-size: 30px')
+          }
+        }
+
+        // run chart
+        var dom = document.getElementById("container");
+        var myChart = echarts.init(dom);
+        var app = {};
+
+        var option;
+
+        option = {
+          title: {
+            text: '斐波拉契函数测试js和wasm'
+          },
+          tooltip: {
+            trigger: 'axis'
+          },
+          legend: {
+            data: ['JS', 'WASM']
+          },
+          grid: {
+            left: '5%',
+            right: '5%',
+            bottom: '5%',
+            containLabel: true
+          },
+          toolbox: {
+            feature: {
+              saveAsImage: {}
+            }
+          },
+          xAxis: {
+            type: 'category',
+            boundaryGap: false,
+            data: indexData
+          },
+          yAxis: [
+            {
+              type: 'value',
+              axisLabel: {
+                formatter: function (value, index) {
+                  return value / times + 'ms';
+                }
+              },
+            },
+            {
+              type: 'value',
+              name: 'js运行时间/wasm运行时间',
+              min: 0,
+              max: 10,
+              position: 'right',
+              axisLabel: {
+                formatter: '{value} 倍'
+              },
+              axisLine: {
+                show: true,
+              },
+            }
+          ],
+          dataZoom: [
+            {
+              type: 'inside',
+              start: 0,
+              end: 100
+            },
+            {
+              start: 0,
+              end: 100
+            }
+          ],
+          series: [
+            {
+              name: 'JS',
+              type: 'line',
+              data: jsData
+            },
+            {
+              name: 'WASM',
+              type: 'line',
+              data: wasmData
+            },
+            {
+              name: 'JS/WASM',
+              type: 'bar',
+              data: timesData,
+              yAxisIndex: 1,
+              markLine: {
+                data: [{
+                  name: '1倍',
+                  yAxis: 1,
+                  lineStyle: {
+                    color: 'red'
+                  }
+                }]
+              }
+            },
+          ]
+        };
+
+        if (option && typeof option === 'object') {
+          myChart.setOption(option);
+        }
       })
   </script>
+
 </body>
 
 </html>
