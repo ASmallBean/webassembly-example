@@ -5,8 +5,7 @@
 using namespace std;
 
 extern "C"
-{ // 避免 Name Mangling
-  // 宏参数 避免DCE
+{
   EMSCRIPTEN_KEEPALIVE int fib(int x)
   {
     if (x <= 0)

@@ -33,7 +33,9 @@ build.fib.clang:
 
 .PHONY: build.fib.wasm
 build.fib.wasm:
-	@emcc ${FIB_DIR}/main.cpp -o ${FIB_DIR}/dist/fib.wasm --no-entry
+	@emcc ${FIB_DIR}/main.cpp   -o ${FIB_DIR}/dist/fib.wasm --no-entry
+
+# -O3 -s WASM=1 -s SIDE_MODULE=1 -s EXPORTED_FUNCTIONS='["_fib","_main"]'
 
 
 .PHONY: build.fib.html

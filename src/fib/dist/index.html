@@ -36,9 +36,9 @@
         const exports = instance.exports
         console.log("🚀 ~ file: chart.html ~ line 37 ~ exports", exports)
         const times = 1
-        for (let index = 2; index < num; index++) {
+        function test(index) {
           indexData.push(index)
-
+          console.log(`%c index 为 ${index}`, 'color: white; background: red; font-size: 30px')
           // js
           const start = performance.now() * times
           console.time(`js测试速度${index}`)
@@ -61,14 +61,20 @@
           jsData.push(jsTime)
           wasmData.push(wasmTime)
           timesData.push(Number((jsTime / wasmTime).toFixed(1)))
-          console.log(`js耗时:${jsTime / times}ms  wasm耗时: ${wasmTime / times}ms`)
-
-          if (wasmTime > jsTime) {
-            console.log(`%c js更快 index 为 ${index}`, 'color: white; background: red; font-size: 30px')
-          } else {
-            console.log(`%c wasm更快 index 为 ${index}`, 'color: white; background: green; font-size: 30px')
-          }
         }
+        // test(Math.floor(Math.random() * 50))
+        // for (let index = 2; index < num; index++) {
+        for (let index = num; index > 2; index--) {
+          test(index)
+          // console.log(`js耗时:${jsTime / times}ms  wasm耗时: ${wasmTime / times}ms`)
+
+          // if (wasmTime > jsTime) {
+          //   console.log(`%c js更快 index 为 ${index}`, 'color: white; background: red; font-size: 30px')
+          // } else {
+          //   console.log(`%c wasm更快 index 为 ${index}`, 'color: white; background: green; font-size: 30px')
+          // }
+        }
+
 
         // run chart
         var dom = document.getElementById("container");
