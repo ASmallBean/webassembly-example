@@ -1,5 +1,6 @@
 DIST_DIR=dist
 SORT_DIR=src/sort
+MULTIPLE_DIR=src/multiple
 ADD_DIR=src/add
 DIP_DIR=src/dip
 FIB_DIR=src/fib
@@ -109,3 +110,8 @@ build.capi.g++:
 .PHONY: build.mem.js
 build.mem.js:
 	@emcc ${MEM_DIR}/mem.cpp --std=c++11 -s WASM=1 -o ${MEM_DIR}/index.js --post-js ${MEM_DIR}/post-script.js
+
+
+.PHONY: build.multiple.js
+build.multiple.js:
+	@emcc ${MULTIPLE_DIR}/main.cpp --std=c++11 -O3 -s WASM=1 -o ${MULTIPLE_DIR}/js/index.js --post-js ${MULTIPLE_DIR}/post-script.js -s EXPORTED_RUNTIME_METHODS="['cwrap','ccall','getValue']" -s "EXPORTED_FUNCTIONS=['_malloc','_free']"

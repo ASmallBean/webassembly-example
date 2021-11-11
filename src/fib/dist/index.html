@@ -42,13 +42,13 @@
           // js
           const start = performance.now() * times
           console.time(`js测试速度${index}`)
-          const jsResult = fib(index)
+          fib(index)
           console.timeEnd(`js测试速度${index}`)
           const jsEnd = performance.now() * times
 
           // wasm
           console.time(`wasm测试速度${index}`)
-          const wasmResult = exports.fib(index)
+          exports.fib(index)
           console.timeEnd(`wasm测试速度${index}`)
           const wasmEnd = performance.now() * times
 

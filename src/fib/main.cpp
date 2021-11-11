@@ -23,17 +23,17 @@ extern "C"
 
 int main()
 {
-  // clock_t t1, t2;
-  // t1 = clock();
-  // cout << t1 << endl;
-  // int result = fib(40);
-  // // for (int a = 10; a < 35; a = a + 1)
-  // // {
-  // //   fib(40);
-  // // }
-  // t2 = clock();
-  // cout << t2 << endl;
-  // cout << result << endl;
-  // cout << (t2 - t1) / 1000 << "ms" << endl;
-  // return 0;
+  clock_t t1, t2;
+  t1 = clock();
+  cout << t1 << endl;
+  int result = fib(40);
+  // for (int a = 10; a < 35; a = a + 1)
+  // {
+  //   fib(40);
+  // }
+  t2 = clock();
+  cout << t2 << endl;
+  cout << result << endl;
+  cout << (t2 - t1) / 1000 << "ms" << endl;
+  return 0;
 }

@@ -56,4 +56,5 @@ __ATPOSTRUN__.push(() => {
     clearArrResult.push(Module['getValue'](incrementPointer + i, 'i8'));
   }
   console.log("Module._increment([1, 2, 3, 4],3) ==>" + clearArrResult)
+
 });
