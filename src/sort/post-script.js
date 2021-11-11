@@ -1,10 +1,12 @@
 __ATPOSTRUN__.push(() => {
   console.log("-------------------- quickSort ----------------------------------")
   //创建一个WebIDL对象
-  var array = [11, 24, 36, 42, 4, 25, 9, 1, 0];
+
 
   console.log("Module对象:%o", Module);
   console.log("原数组:%o", array);
+
+  var array = [11, 24, 36, 42, 4, 25, 9, 1, 0];
 
   var incrementPointer = Module['cwrap']('quickSort', 'number', ['array', 'number', 'number'])(array, 0, array.length - 1);
   // var arrayPointer = Module._quickSort(array, 0, array.length - 1)
@@ -46,7 +48,7 @@ __ATPOSTRUN__.push(() => {
 
   console.log("-------------------- increment ----------------------------------")
   const incrementArray = [1, 2, 10, 4];
-  //返回数组首地址
+
   var incrementPointer = Module["ccall"]('increment', 'number', ['array', 'number'], [array, array.length]);
 
   //定义一个结果集容器

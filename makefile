@@ -109,7 +109,7 @@ build.capi.g++:
 
 .PHONY: build.mem.js
 build.mem.js:
-	@emcc ${MEM_DIR}/mem.cpp --std=c++11 -s WASM=1 -o ${MEM_DIR}/index.js --post-js ${MEM_DIR}/post-script.js
+	@emcc ${MEM_DIR}/mem.cpp --std=c++11 -s WASM=1 -o ${MEM_DIR}/dist/index.js --post-js ${MEM_DIR}/post-script.js
 
 
 .PHONY: build.multiple.js
